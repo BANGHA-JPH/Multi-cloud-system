@@ -9,9 +9,9 @@ export async function getStorageQuota(req: AuthenticatedRequest, res: Response):
     const userId = req.user?.userId;
     const quotaData = await getAggregatedStorageQuota(userId);
     res.status(200).json(quotaData);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Storage Quota Error:', error);
-    res.status(500).json({ error: 'Failed to retrieve storage quota metrics.' });
+    res.status(500).json({ error: 'Failed to retrieve storage quota metrics.', details: error?.message || String(error) });
   }
 }
 
@@ -43,9 +43,9 @@ export async function getCloudAccounts(req: AuthenticatedRequest, res: Response)
         usedStorageBytes: acc.usedStorageBytes.toString(),
       })),
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Cloud Accounts Error:', error);
-    res.status(500).json({ error: 'Failed to retrieve cloud accounts.' });
+    res.status(500).json({ error: 'Failed to retrieve cloud accounts.', details: error?.message || String(error) });
   }
 }
 
@@ -144,8 +144,8 @@ export async function disconnectCloudAccount(req: AuthenticatedRequest, res: Res
     });
 
     res.status(200).json({ message: `${provider} account unlinked successfully.` });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Disconnect Account Error:', error);
-    res.status(500).json({ error: 'Failed to unlink cloud account.' });
+    res.status(500).json({ error: 'Failed to unlink cloud account.', details: error?.message || String(error) });
   }
 }

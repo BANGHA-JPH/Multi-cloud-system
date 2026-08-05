@@ -167,7 +167,7 @@ export async function getUserFiles(req: AuthRequest, res: Response): Promise<voi
     res.status(200).json({ files: formattedFiles });
   } catch (error: any) {
     console.error('Get Files Error:', error);
-    res.status(500).json({ error: 'Failed to fetch files.' });
+    res.status(500).json({ error: 'Failed to fetch files.', details: error?.message || String(error) });
   }
 }
 
@@ -205,7 +205,7 @@ export async function verifyFileIntegrity(req: AuthRequest, res: Response): Prom
     });
   } catch (error: any) {
     console.error('Integrity Verification Error:', error);
-    res.status(500).json({ error: 'Failed to verify file integrity.' });
+    res.status(500).json({ error: 'Failed to verify file integrity.', details: error?.message || String(error) });
   }
 }
 
