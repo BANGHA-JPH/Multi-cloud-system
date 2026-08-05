@@ -1,0 +1,135 @@
+// Prisma Schema for CloudFusion Multi-Cloud File Management System
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum CloudProvider {
+  AWS_S3
+  GOOGLE_DRIVE
+  DROPBOX
+  MEGA
+  ONEDRIVE
+}
+
+enum FileStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+enum AuditAction {
+  USER_REGISTER
+  USER_LOGIN
+  FILE_UPLOAD
+  FILE_DOWNLOAD
+  FILE_DELETE
+  FILE_DECRYPT
+  INTEGRITY_CHECK
+  CLOUD_REBALANCE
+  CLOUD_ACCOUNT_LINK
+}
+
+model User {
+  id               String          @id @default(uuid())
+  email            String          @unique
+  passwordHash     String
+  name             String
+  role             Role            @default(USER)
+  isMfaEnabled     Boolean         @default(false)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  cloudAccounts    CloudAccount[]
+  files            FileMetadata[]
+  auditLogs        AuditLog[]
+  storageQuota     StorageQuota?
+
+  @@map("users")
+}
+
+model CloudAccount {
+  id                   String        @id @default(uuid())
+  userId               String
+  provider             CloudProvider
+  accountEmail         String?
+  credentialsEncrypted String        // Encrypted JSON string of tokens/keys
+  isPrimary            Boolean       @default(false)
+  totalStorageBytes    BigInt        @default(21474836480) // Default quota
+  usedStorageBytes     BigInt        @default(0)
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@map("cloud_accounts")
+}
+
+model FileMetadata {
+  id                      String        @id @default(uuid())
+  userId                  String
+  originalName            String
+  mimeType                String
+  sizeBytes               BigInt
+  encryptedSizeBytes      BigInt
+  checksumSHA256          String
+  aesInitializationVector String       // IV vector for AES-256-GCM
+  aesAuthTag              String?       // Authentication tag for AES-256-GCM
+  cloudProvider           CloudProvider
+  remoteFileId            String        // Object Key or File ID in Cloud Provider
+  remoteFilePath          String?
+  isEncrypted             Boolean       @default(true)
+  status                  FileStatus    @default(ACTIVE)
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
+
+  user                    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([checksumSHA256])
+  @@map("file_metadata")
+}
+
+model AuditLog {
+  id         String      @id @default(uuid())
+  userId     String
+  action     AuditAction
+  details    String?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime    @default(now())
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("audit_logs")
+}
+
+model StorageQuota {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  totalQuotaBytes   BigInt   @default(55834574848) // 52 GB Combined 5-Cloud Quota
+  usedQuotaBytes    BigInt   @default(0)
+  s3UsedBytes       BigInt   @default(0)
+  gdriveUsedBytes   BigInt   @default(0)
+  dropboxUsedBytes  BigInt   @default(0)
+  megaUsedBytes     BigInt   @default(0)
+  onedriveUsedBytes BigInt   @default(0)
+  updatedAt         DateTime @updatedAt
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("storage_quotas")
+}
