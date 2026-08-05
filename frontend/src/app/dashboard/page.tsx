@@ -138,6 +138,17 @@ export default function CloudFusionAppDashboard() {
     providers: any;
   } | null>(null);
 
+  // File Library States
+  const [userFiles, setUserFiles] = useState<any[]>([]);
+  const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(false);
+  const [filesFetchError, setFilesFetchError] = useState<string | null>(null);
+
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedProviderFilter, setSelectedProviderFilter] = useState<string>('ALL');
+  const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'size_desc' | 'size_asc'>('date_desc');
+  const [downloadingFileIds, setDownloadingFileIds] = useState<string[]>([]);
+  const [showUploadSection, setShowUploadSection] = useState<boolean>(false);
+
   const formatStorageBytes = (bytesStr?: string) => {
     if (!bytesStr) return '0.00 GB';
     const bytes = Number(bytesStr);
@@ -201,31 +212,82 @@ export default function CloudFusionAppDashboard() {
   };
 
   const fetchUserFiles = async () => {
+    setIsLoadingFiles(true);
+    setFilesFetchError(null);
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
       const res = await fetch('http://localhost:5000/api/files/', {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.files && Array.isArray(data.files)) {
-          const formattedActivities: ActivityItem[] = data.files.map((f: any) => ({
+
+      if (!res.ok) {
+        throw new Error(`Failed to fetch file library (${res.status})`);
+      }
+
+      const data = await res.json();
+      if (data.files && Array.isArray(data.files)) {
+        setUserFiles(data.files);
+
+        const formattedActivities: ActivityItem[] = data.files.map((f: any) => ({
+          id: f.id,
+          fileName: f.originalName,
+          cloudSource:
+            f.cloudProvider === 'GOOGLE_DRIVE'
+              ? 'Google Drive'
+              : f.cloudProvider === 'AWS_S3'
+              ? 'AWS S3'
+              : f.cloudProvider === 'DROPBOX'
+              ? 'Dropbox'
+              : f.cloudProvider === 'MEGA'
+              ? 'MEGA'
+              : 'MS OneDrive',
+          size: f.sizeBytes ? `${(f.sizeBytes / (1024 * 1024)).toFixed(1)} MB` : '0 KB',
+          timestamp: f.createdAt
+            ? new Date(f.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+            : 'Just now',
+          status: 'COMPLETED',
+          icon: f.mimeType?.includes('image')
+            ? 'image'
+            : f.mimeType?.includes('video')
+            ? 'movie'
+            : f.mimeType?.includes('pdf')
+            ? 'description'
+            : 'article',
+        }));
+        setActivities(formattedActivities);
+
+        const formattedUploads: UploadProgressItem[] = data.files.map((f: any) => {
+          const providerName =
+            f.cloudProvider === 'GOOGLE_DRIVE'
+              ? 'Google Drive'
+              : f.cloudProvider === 'AWS_S3'
+              ? 'AWS S3'
+              : f.cloudProvider === 'DROPBOX'
+              ? 'Dropbox'
+              : f.cloudProvider === 'MEGA'
+              ? 'MEGA'
+              : 'OneDrive';
+
+          const badgeClass =
+            f.cloudProvider === 'GOOGLE_DRIVE'
+              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+              : f.cloudProvider === 'AWS_S3'
+              ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+              : f.cloudProvider === 'DROPBOX'
+              ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+              : f.cloudProvider === 'MEGA'
+              ? 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+              : 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30';
+
+          return {
             id: f.id,
-            fileName: f.originalName,
-            cloudSource:
-              f.cloudProvider === 'GOOGLE_DRIVE'
-                ? 'Google Drive'
-                : f.cloudProvider === 'AWS_S3'
-                ? 'AWS S3'
-                : f.cloudProvider === 'DROPBOX'
-                ? 'Dropbox'
-                : f.cloudProvider === 'MEGA'
-                ? 'MEGA'
-                : 'MS OneDrive',
-            size: f.sizeBytes ? `${(f.sizeBytes / (1024 * 1024)).toFixed(1)} MB` : '0 KB',
-            timestamp: f.createdAt ? new Date(f.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Just now',
-            status: 'COMPLETED',
+            name: f.originalName,
+            provider: providerName,
+            providerBadgeClass: badgeClass,
+            sizeProgress: `${(f.sizeBytes / (1024 * 1024)).toFixed(1)} MB • Encrypted & Saved`,
+            percentage: 100,
+            status: 'COMPLETE',
             icon: f.mimeType?.includes('image')
               ? 'image'
               : f.mimeType?.includes('video')
@@ -233,85 +295,75 @@ export default function CloudFusionAppDashboard() {
               : f.mimeType?.includes('pdf')
               ? 'description'
               : 'article',
-          }));
-          setActivities(formattedActivities);
-
-          const formattedUploads: UploadProgressItem[] = data.files.map((f: any) => {
-            const providerName =
-              f.cloudProvider === 'GOOGLE_DRIVE'
-                ? 'Google Drive'
-                : f.cloudProvider === 'AWS_S3'
-                ? 'AWS S3'
-                : f.cloudProvider === 'DROPBOX'
-                ? 'Dropbox'
-                : f.cloudProvider === 'MEGA'
-                ? 'MEGA'
-                : 'OneDrive';
-
-            const badgeClass =
-              f.cloudProvider === 'GOOGLE_DRIVE'
-                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                : f.cloudProvider === 'AWS_S3'
-                ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
-                : f.cloudProvider === 'DROPBOX'
-                ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-                : f.cloudProvider === 'MEGA'
-                ? 'bg-rose-500/20 text-rose-400 border-rose-500/30'
-                : 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30';
-
-            return {
-              id: f.id,
-              name: f.originalName,
-              provider: providerName,
-              providerBadgeClass: badgeClass,
-              sizeProgress: `${(f.sizeBytes / (1024 * 1024)).toFixed(1)} MB • Encrypted & Saved`,
-              percentage: 100,
-              status: 'COMPLETE',
-              icon: f.mimeType?.includes('image')
-                ? 'image'
-                : f.mimeType?.includes('video')
-                ? 'movie'
-                : f.mimeType?.includes('pdf')
-                ? 'description'
-                : 'article',
-            };
-          });
-          setUploadItems(formattedUploads);
-        }
+          };
+        });
+        setUploadItems(formattedUploads);
       }
-    } catch (e) {
-      console.warn('Files fetch notice:', e);
+    } catch (e: any) {
+      console.warn('Files fetch error:', e);
+      setFilesFetchError(e?.message || 'Error loading files from cloud mesh');
+      setToastMessage(e?.message || 'Error fetching file library');
+      setTimeout(() => setToastMessage(null), 5000);
+    } finally {
+      setIsLoadingFiles(false);
     }
   };
 
   const handleFileDownload = async (fileId: string, fileName: string) => {
+    if (downloadingFileIds.includes(fileId)) return;
+
+    setDownloadingFileIds((prev) => [...prev, fileId]);
+
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const res = await fetch(`http://localhost:5000/api/files/download/${fileId}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+
+      // Step 1: Request short-lived download token
+      const tokenRes = await fetch(`http://localhost:5000/api/files/${fileId}/download-token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         credentials: 'include',
       });
 
-      if (!res.ok) {
-        throw new Error(`Download failed with status ${res.status}`);
+      if (!tokenRes.ok) {
+        const errData = await tokenRes.json().catch(() => ({}));
+        throw new Error(errData.error || `Failed to acquire download token (${tokenRes.status})`);
       }
 
-      const blob = await res.blob();
+      const { downloadToken } = await tokenRes.json();
+      if (!downloadToken) {
+        throw new Error('No download token returned from server.');
+      }
+
+      // Step 2: Fetch decrypted stream using download token
+      const downloadRes = await fetch(`http://localhost:5000/api/files/download?token=${downloadToken}`);
+
+      if (!downloadRes.ok) {
+        const errData = await downloadRes.json().catch(() => ({}));
+        throw new Error(errData.error || `Download stream error (${downloadRes.status})`);
+      }
+
+      // Step 3: Convert response stream to Blob and trigger browser download
+      const blob = await downloadRes.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      const tempLink = document.createElement('a');
+      tempLink.href = downloadUrl;
+      tempLink.download = fileName;
+      document.body.appendChild(tempLink);
+      tempLink.click();
+      tempLink.remove();
       window.URL.revokeObjectURL(downloadUrl);
 
       setToastMessage(`Downloaded & decrypted "${fileName}" successfully!`);
       setTimeout(() => setToastMessage(null), 4000);
-    } catch (e) {
+    } catch (e: any) {
       console.error('File download error:', e);
-      setToastMessage(`Failed to download "${fileName}".`);
-      setTimeout(() => setToastMessage(null), 4000);
+      setToastMessage(e?.message || `Failed to download "${fileName}".`);
+      setTimeout(() => setToastMessage(null), 5000);
+    } finally {
+      setDownloadingFileIds((prev) => prev.filter((id) => id !== fileId));
     }
   };
 
@@ -1692,202 +1744,332 @@ export default function CloudFusionAppDashboard() {
             </div>
           )}
 
-          {/* TAB 1: FILES / CLOUD SYNC PAGE */}
+          {/* TAB 1: FILES / ENCRYPTED FILE LIBRARY PAGE */}
           {activeNav === 'files' && (
-            <div className="space-y-10 max-w-4xl mx-auto">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h1 className="font-extrabold text-3xl text-[#e0e3e5] tracking-tight">Select Files</h1>
-                  <span className="text-xs text-[#8b90a0] font-medium">Max size 2GB</span>
-                </div>
-
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setDragActive(true);
-                  }}
-                  onDragLeave={() => setDragActive(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setDragActive(false);
-                    handleFileUpload(e.dataTransfer.files);
-                  }}
-                  className={`border-2 border-dashed rounded-3xl p-10 text-center transition-all glass-panel border-white/10 ${
-                    dragActive ? 'border-primary bg-primary/10' : 'hover:border-primary/50'
-                  }`}
-                >
-                  <div className="w-16 h-16 rounded-2xl bg-[#1d2022] border border-white/10 flex items-center justify-center mx-auto mb-5 shadow-xl">
-                    <span className="material-symbols-outlined text-3xl text-primary">upload_file</span>
-                  </div>
-
-                  <p className="font-semibold text-base text-[#e0e3e5]">Drag and drop here</p>
-                  <p className="text-xs text-[#8b90a0] max-w-md mx-auto mt-2 leading-relaxed">
-                    Or click to browse your local machine for the assets you want to fuse.
+            <div className="space-y-8 max-w-5xl mx-auto">
+              {/* Header Bar */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h1 className="font-extrabold text-3xl text-[#e0e3e5] tracking-tight flex items-center gap-3">
+                    <span>Encrypted File Library</span>
+                    <span className="px-2.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 text-xs font-bold font-mono">
+                      {userFiles.length} {userFiles.length === 1 ? 'file' : 'files'}
+                    </span>
+                  </h1>
+                  <p className="text-xs text-[#8b90a0] mt-1">
+                    Browse, filter, and retrieve encrypted digital assets stored across your cloud mesh.
                   </p>
-
-                  <label className="inline-flex items-center gap-2 mt-6 px-8 py-3.5 rounded-full bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm shadow-xl hover:scale-105 active:scale-95 transition-transform cursor-pointer">
-                    <span>+ Choose Files</span>
-                    <input type="file" onChange={(e) => handleFileUpload(e.target.files)} className="hidden" />
-                  </label>
                 </div>
-              </div>
 
-              <div className="space-y-5">
-                <h2 className="font-extrabold text-2xl text-[#e0e3e5]">Fusion Destination</h2>
-
-                <div
-                  onClick={() => setSelectedDestination('AI')}
-                  className={`relative p-6 rounded-3xl cursor-pointer transition-all border ${
-                    selectedDestination === 'AI'
-                      ? 'bg-blue-600 text-white shadow-2xl border-blue-400/50 scale-[1.01]'
-                      : 'bg-slate-900/60 border-white/10 text-slate-200 hover:border-blue-500/40'
-                  }`}
+                <button
+                  onClick={() => setShowUploadSection(!showUploadSection)}
+                  className="px-5 py-2.5 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-xl transition-all flex items-center gap-2 shrink-0 active:scale-95"
                 >
-                  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/20 text-white text-[10px] font-extrabold tracking-wider uppercase w-fit mb-3">
-                    <span className="material-symbols-outlined text-xs">auto_awesome</span>
-                    <span>RECOMMENDED</span>
-                  </div>
-
-                  <h3 className="font-extrabold text-xl">Fusion AI</h3>
-                  <p className="text-xs opacity-90 mt-1">Let our AI optimize cost and speed across all 5 clouds.</p>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div
-                    onClick={() => setSelectedDestination('S3')}
-                    className={`glass-panel p-5 rounded-3xl border transition-all cursor-pointer ${
-                      selectedDestination === 'S3'
-                        ? 'border-amber-400 bg-amber-500/10 shadow-xl'
-                        : 'border-amber-500/20 hover:border-amber-500/50'
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-amber-400 text-3xl mb-3">cloud</span>
-                    <h4 className="font-bold text-base text-white">AWS S3</h4>
-                    <p className="text-[11px] text-[#8b90a0] mt-0.5">Secure Storage</p>
-                  </div>
-
-                  <div
-                    onClick={() => setSelectedDestination('DROPBOX')}
-                    className={`glass-panel p-5 rounded-3xl border transition-all cursor-pointer ${
-                      selectedDestination === 'DROPBOX'
-                        ? 'border-blue-400 bg-blue-500/10 shadow-xl'
-                        : 'border-blue-500/20 hover:border-blue-500/50'
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-blue-400 text-3xl mb-3">folder_shared</span>
-                    <h4 className="font-bold text-base text-white">Dropbox</h4>
-                    <p className="text-[11px] text-[#8b90a0] mt-0.5">Direct Sync</p>
-                  </div>
-
-                  <div
-                    onClick={() => setSelectedDestination('GDRIVE')}
-                    className={`glass-panel p-5 rounded-3xl border transition-all cursor-pointer ${
-                      selectedDestination === 'GDRIVE'
-                        ? 'border-emerald-400 bg-emerald-500/10 shadow-xl'
-                        : 'border-emerald-500/20 hover:border-emerald-500/50'
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-emerald-400 text-3xl mb-3">add_to_drive</span>
-                    <h4 className="font-bold text-base text-white">Google Drive</h4>
-                    <p className="text-[11px] text-[#8b90a0] mt-0.5">Personal Space</p>
-                  </div>
-
-                  <div
-                    onClick={() => setSelectedDestination('AZURE')}
-                    className={`glass-panel p-5 rounded-3xl border transition-all cursor-pointer ${
-                      selectedDestination === 'AZURE'
-                        ? 'border-cyan-400 bg-cyan-500/10 shadow-xl'
-                        : 'border-cyan-500/20 hover:border-cyan-500/50'
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-cyan-400 text-3xl mb-3">cloud_queue</span>
-                    <h4 className="font-bold text-base text-white">Azure</h4>
-                    <p className="text-[11px] text-[#8b90a0] mt-0.5">Enterprise Blob</p>
-                  </div>
-                </div>
-
-                <button className="w-full glass-panel py-4 rounded-3xl border border-dashed border-white/20 hover:border-white/40 flex items-center justify-center space-x-3 text-sm font-semibold text-[#c1c6d7] hover:text-white transition-all">
-                  <span className="material-symbols-outlined text-xl">add</span>
-                  <span>Connect new cloud instance</span>
+                  <span className="material-symbols-outlined text-lg">{showUploadSection ? 'close' : 'cloud_upload'}</span>
+                  <span>{showUploadSection ? 'Hide Upload Panel' : '+ Upload New File'}</span>
                 </button>
               </div>
 
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="font-extrabold text-2xl text-[#e0e3e5]">Recent Uploads</h2>
-                  <Link href="#" className="text-xs font-semibold text-[#c1c6d7] hover:text-primary transition-colors flex items-center gap-1">
-                    <span>View all</span>
-                    <span className="material-symbols-outlined text-xs">arrow_forward</span>
-                  </Link>
-                </div>
-
-                <div className="space-y-3">
-                  {uploadItems.length === 0 ? (
-                    <div className="glass-panel p-8 rounded-2xl border border-white/10 text-center space-y-2">
-                      <span className="material-symbols-outlined text-4xl text-[#8b90a0]">cloud_upload</span>
-                      <p className="text-sm font-semibold text-white">No active uploads</p>
-                      <p className="text-xs text-[#8b90a0]">Choose files above to encrypt and upload assets to your cloud mesh.</p>
+              {/* Collapsible Upload Panel */}
+              {showUploadSection && (
+                <div className="space-y-6 glass-panel p-6 rounded-3xl border border-primary/30 bg-primary/5 animate-fadeIn">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h2 className="font-extrabold text-xl text-white flex items-center gap-2">
+                        <span className="material-symbols-outlined text-primary text-2xl">upload_file</span>
+                        <span>Upload File to Storage Mesh</span>
+                      </h2>
+                      <span className="text-xs text-[#8b90a0]">Max file size: 2 GB</span>
                     </div>
-                  ) : (
-                    uploadItems.map((item) => (
-                      <div key={item.id} className="glass-panel p-4 rounded-2xl border border-white/10 flex items-center justify-between gap-4">
-                        <div className="flex items-center space-x-4 flex-1 min-w-0">
-                          <div className="w-12 h-12 rounded-xl bg-[#1d2022] border border-white/10 flex items-center justify-center flex-shrink-0 text-primary">
-                            <span className="material-symbols-outlined text-2xl">{item.icon}</span>
-                          </div>
 
-                          <div className="flex-1 min-w-0 space-y-1">
-                            <div className="flex items-center space-x-3">
-                              <span className="font-bold text-sm text-white truncate">{item.name}</span>
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${item.providerBadgeClass}`}>
-                                {item.provider}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center justify-between text-xs text-[#8b90a0]">
-                              <span>{item.sizeProgress}</span>
-                              {item.status === 'UPLOADING' && <span className="font-mono text-primary font-bold">{item.percentage}%</span>}
-                              {item.status === 'COMPLETE' && (
-                                <span className="flex items-center space-x-1 text-emerald-400 font-bold">
-                                  <span className="material-symbols-outlined text-sm">check_circle</span>
-                                  <span>Complete</span>
-                                </span>
-                              )}
-                            </div>
-
-                            {item.status === 'UPLOADING' && (
-                              <div className="w-full bg-[#1d2022] h-1.5 rounded-full overflow-hidden mt-1">
-                                <div
-                                  className="bg-blue-500 h-full transition-all duration-300"
-                                  style={{ width: `${item.percentage}%` }}
-                                />
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex items-center space-x-2">
-                          {item.status === 'COMPLETE' && (
-                            <button
-                              onClick={() => handleFileDownload(item.id, item.name)}
-                              title="Download Decrypted File"
-                              className="px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition-all flex items-center gap-1.5"
-                            >
-                              <span className="material-symbols-outlined text-base">cloud_download</span>
-                              <span>Download</span>
-                            </button>
-                          )}
-                          <button
-                            onClick={() => removeUploadItem(item.id)}
-                            className="text-[#8b90a0] hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors"
-                          >
-                            <span className="material-symbols-outlined text-lg">close</span>
-                          </button>
-                        </div>
+                    <div
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setDragActive(true);
+                      }}
+                      onDragLeave={() => setDragActive(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setDragActive(false);
+                        handleFileUpload(e.dataTransfer.files);
+                      }}
+                      className={`border-2 border-dashed rounded-3xl p-8 text-center transition-all bg-[#101415]/60 border-white/10 ${
+                        dragActive ? 'border-primary bg-primary/10' : 'hover:border-primary/50'
+                      }`}
+                    >
+                      <div className="w-14 h-14 rounded-2xl bg-[#1d2022] border border-white/10 flex items-center justify-center mx-auto mb-4 shadow-xl">
+                        <span className="material-symbols-outlined text-3xl text-primary">upload_file</span>
                       </div>
-                    ))
-                  )}
+
+                      <p className="font-semibold text-sm text-[#e0e3e5]">Drag and drop file here</p>
+                      <p className="text-xs text-[#8b90a0] max-w-md mx-auto mt-1 leading-relaxed">
+                        Files are encrypted client-side with AES-256 before streaming to cloud providers.
+                      </p>
+
+                      <label className="inline-flex items-center gap-2 mt-5 px-6 py-2.5 rounded-full bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-xl cursor-pointer">
+                        <span>+ Choose Local File</span>
+                        <input type="file" onChange={(e) => handleFileUpload(e.target.files)} className="hidden" />
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Destination Selector */}
+                  <div className="space-y-3 pt-2 border-t border-white/10">
+                    <h3 className="font-extrabold text-sm text-[#e0e3e5]">Select Fusion Destination</h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                      {(
+                        [
+                          { id: 'AI', label: 'Fusion AI', icon: 'auto_awesome', color: 'text-primary' },
+                          { id: 'S3', label: 'AWS S3', icon: 'database', color: 'text-amber-400' },
+                          { id: 'DROPBOX', label: 'Dropbox', icon: 'folder_shared', color: 'text-blue-400' },
+                          { id: 'GDRIVE', label: 'Google Drive', icon: 'add_to_drive', color: 'text-emerald-400' },
+                          { id: 'AZURE', label: 'Azure Blob', icon: 'cloud_queue', color: 'text-cyan-400' },
+                        ] as const
+                      ).map((dest) => (
+                        <div
+                          key={dest.id}
+                          onClick={() => setSelectedDestination(dest.id)}
+                          className={`p-3 rounded-2xl border text-center cursor-pointer transition-all ${
+                            selectedDestination === dest.id
+                              ? 'bg-blue-600 text-white border-blue-400 shadow-lg scale-[1.02]'
+                              : 'bg-[#101415] border-white/10 text-slate-300 hover:border-white/20'
+                          }`}
+                        >
+                          <span className={`material-symbols-outlined text-xl mb-1 ${dest.color}`}>{dest.icon}</span>
+                          <div className="font-bold text-xs truncate">{dest.label}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
+              )}
+
+              {/* Controls Header: Search, Provider Chips, Sort Dropdown */}
+              <div className="glass-panel p-5 rounded-3xl border border-white/10 space-y-4">
+                <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+                  {/* Search Bar */}
+                  <div className="relative flex-1 w-full">
+                    <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xl">
+                      search
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="Search files by original name..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full bg-[#101415] border border-white/10 rounded-2xl pl-11 pr-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-primary/50 transition-colors"
+                    />
+                    {searchQuery && (
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                      >
+                        <span className="material-symbols-outlined text-base">close</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Sort Selector */}
+                  <div className="flex items-center gap-2 w-full md:w-auto shrink-0">
+                    <span className="text-xs font-semibold text-[#8b90a0] flex items-center gap-1">
+                      <span className="material-symbols-outlined text-sm">sort</span>
+                      <span>Sort:</span>
+                    </span>
+                    <select
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value as any)}
+                      className="bg-[#101415] border border-white/10 rounded-xl px-3 py-2 text-xs text-white font-medium focus:outline-none cursor-pointer"
+                    >
+                      <option value="date_desc">Date (Newest First)</option>
+                      <option value="date_asc">Date (Oldest First)</option>
+                      <option value="size_desc">Size (Largest First)</option>
+                      <option value="size_asc">Size (Smallest First)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Filter Chips */}
+                <div className="flex items-center gap-2 overflow-x-auto pt-1 pb-0.5">
+                  {(
+                    [
+                      { id: 'ALL', label: 'All Clouds', icon: 'grid_view' },
+                      { id: 'GOOGLE_DRIVE', label: 'Google Drive', icon: 'add_to_drive' },
+                      { id: 'AWS_S3', label: 'AWS S3', icon: 'database' },
+                      { id: 'DROPBOX', label: 'Dropbox', icon: 'folder_shared' },
+                      { id: 'MEGA', label: 'MEGA Cloud', icon: 'lock' },
+                      { id: 'ONEDRIVE', label: 'OneDrive', icon: 'cloud' },
+                    ] as const
+                  ).map((prov) => (
+                    <button
+                      key={prov.id}
+                      onClick={() => setSelectedProviderFilter(prov.id)}
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 shrink-0 transition-all ${
+                        selectedProviderFilter === prov.id
+                          ? 'bg-primary text-white shadow-md shadow-primary/20 border border-primary'
+                          : 'bg-[#1d2022] text-[#8b90a0] hover:text-white border border-white/5'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-sm">{prov.icon}</span>
+                      <span>{prov.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* File Library List View */}
+              <div className="space-y-4">
+                {isLoadingFiles ? (
+                  <div className="glass-panel p-12 rounded-3xl border border-white/10 text-center space-y-3">
+                    <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin mx-auto" />
+                    <p className="text-xs text-[#8b90a0] font-semibold">Loading encrypted file metadata from database...</p>
+                  </div>
+                ) : filesFetchError ? (
+                  <div className="glass-panel p-8 rounded-3xl border border-rose-500/30 bg-rose-500/5 text-center space-y-2">
+                    <span className="material-symbols-outlined text-3xl text-rose-400">warning</span>
+                    <p className="text-sm font-bold text-white">Failed to load File Library</p>
+                    <p className="text-xs text-rose-300 max-w-sm mx-auto">{filesFetchError}</p>
+                    <button
+                      onClick={fetchUserFiles}
+                      className="px-4 py-2 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-500/40 rounded-xl text-xs font-bold mt-2 transition-colors"
+                    >
+                      Retry Fetch
+                    </button>
+                  </div>
+                ) : userFiles
+                    .filter((f) => {
+                      const matchesSearch = f.originalName.toLowerCase().includes(searchQuery.toLowerCase());
+                      const matchesProvider = selectedProviderFilter === 'ALL' || f.cloudProvider === selectedProviderFilter;
+                      return matchesSearch && matchesProvider;
+                    })
+                    .length === 0 ? (
+                  <div className="glass-panel p-12 rounded-3xl border border-white/10 text-center space-y-3">
+                    <span className="material-symbols-outlined text-5xl text-[#8b90a0]">folder_open</span>
+                    <h3 className="font-bold text-lg text-white">
+                      {userFiles.length === 0 ? 'No files stored yet' : 'No matching files found'}
+                    </h3>
+                    <p className="text-xs text-[#8b90a0] max-w-sm mx-auto">
+                      {userFiles.length === 0
+                        ? 'Upload a file using the "+ Upload New File" button above to encrypt and distribute it across your cloud mesh.'
+                        : 'Try clearing your search query or selecting a different cloud provider filter.'}
+                    </p>
+                    {userFiles.length === 0 && (
+                      <button
+                        onClick={() => setShowUploadSection(true)}
+                        className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-lg transition-colors mt-2"
+                      >
+                        + Upload First File
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  userFiles
+                    .filter((f) => {
+                      const matchesSearch = f.originalName.toLowerCase().includes(searchQuery.toLowerCase());
+                      const matchesProvider = selectedProviderFilter === 'ALL' || f.cloudProvider === selectedProviderFilter;
+                      return matchesSearch && matchesProvider;
+                    })
+                    .sort((a, b) => {
+                      if (sortBy === 'date_desc') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+                      if (sortBy === 'date_asc') return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+                      if (sortBy === 'size_desc') return Number(b.sizeBytes) - Number(a.sizeBytes);
+                      if (sortBy === 'size_asc') return Number(a.sizeBytes) - Number(b.sizeBytes);
+                      return 0;
+                    })
+                    .map((file) => {
+                      const isDownloading = downloadingFileIds.includes(file.id);
+                      const providerBadgeClass =
+                        file.cloudProvider === 'GOOGLE_DRIVE'
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                          : file.cloudProvider === 'AWS_S3'
+                          ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                          : file.cloudProvider === 'DROPBOX'
+                          ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                          : file.cloudProvider === 'MEGA'
+                          ? 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+                          : 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30';
+
+                      const providerDisplayName =
+                        file.cloudProvider === 'GOOGLE_DRIVE'
+                          ? 'Google Drive'
+                          : file.cloudProvider === 'AWS_S3'
+                          ? 'AWS S3'
+                          : file.cloudProvider === 'DROPBOX'
+                          ? 'Dropbox'
+                          : file.cloudProvider === 'MEGA'
+                          ? 'MEGA'
+                          : 'OneDrive';
+
+                      const fileIcon = file.mimeType?.includes('image')
+                        ? 'image'
+                        : file.mimeType?.includes('video')
+                        ? 'movie'
+                        : file.mimeType?.includes('pdf')
+                        ? 'description'
+                        : 'article';
+
+                      return (
+                        <div
+                          key={file.id}
+                          className="glass-panel p-5 rounded-3xl border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-white/20 transition-all group"
+                        >
+                          <div className="flex items-center space-x-4 flex-1 min-w-0">
+                            <div className="w-12 h-12 rounded-2xl bg-[#1d2022] border border-white/10 flex items-center justify-center shrink-0 text-primary group-hover:scale-105 transition-transform">
+                              <span className="material-symbols-outlined text-2xl">{fileIcon}</span>
+                            </div>
+
+                            <div className="space-y-1 min-w-0 flex-1">
+                              <div className="flex items-center space-x-2 flex-wrap gap-y-1">
+                                <h3 className="font-extrabold text-sm text-white truncate max-w-xs sm:max-w-md">
+                                  {file.originalName}
+                                </h3>
+
+                                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border ${providerBadgeClass}`}>
+                                  {providerDisplayName}
+                                </span>
+
+                                {file.isEncrypted && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-semibold">
+                                    <span className="material-symbols-outlined text-xs">lock</span>
+                                    <span>AES-256</span>
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center space-x-4 text-xs text-[#8b90a0]">
+                                <span>{formatStorageBytes(String(file.sizeBytes))}</span>
+                                <span>•</span>
+                                <span>{new Date(file.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center space-x-3 shrink-0 self-end sm:self-center">
+                            <button
+                              disabled={isDownloading}
+                              onClick={() => handleFileDownload(file.id, file.originalName)}
+                              className={`px-5 py-2.5 rounded-2xl text-xs font-extrabold shadow-lg transition-all flex items-center gap-2 ${
+                                isDownloading
+                                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 cursor-not-allowed'
+                                  : 'bg-cyan-500 hover:bg-cyan-400 text-black shadow-cyan-500/20 active:scale-95'
+                              }`}
+                            >
+                              {isDownloading ? (
+                                <>
+                                  <span className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                                  <span>Decrypting & Downloading...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="material-symbols-outlined text-base">cloud_download</span>
+                                  <span>Retrieve File</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
               </div>
             </div>
           )}

@@ -1,8 +1,11 @@
-import { Response } from 'express';
+import { Request, Response } from 'express';
+import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
+import { Readable } from 'stream';
 import { AuthRequest } from '../middleware/auth.middleware';
-import { encryptFileBuffer, decryptFileBuffer, computeSHA256 } from '../services/crypto.service';
+import { encryptFileBuffer, decryptFileBuffer, computeSHA256, getMasterKey } from '../services/crypto.service';
 import { CloudBalancerService, CloudProviderEnum } from '../services/storage/cloudBalancer.service';
-import { uploadFileToGDrive, downloadFileFromGDrive } from '../services/storage/gdrive.service';
+import { uploadFileToGDrive, downloadFileFromGDrive, getGDriveDownloadStream } from '../services/storage/gdrive.service';
 import { prisma } from '../config/db';
 
 export async function uploadEncryptedFile(req: AuthRequest, res: Response): Promise<void> {
@@ -206,7 +209,95 @@ export async function verifyFileIntegrity(req: AuthRequest, res: Response): Prom
   }
 }
 
-export async function downloadEncryptedFile(req: AuthRequest, res: Response): Promise<void> {
+const JWT_SECRET = process.env.JWT_SECRET || 'cloudfusion_master_jwt_secret_key_32_bytes_min_prod';
+
+export async function streamDecryptedDownload(
+  fileId: string,
+  userId: string,
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const file = await prisma.fileMetadata.findUnique({
+      where: { id: fileId },
+    });
+
+    if (!file || file.userId !== userId) {
+      res.status(404).json({ error: 'File record not found or access denied.' });
+      return;
+    }
+
+    let cloudStream: Readable | null = null;
+
+    if (file.cloudProvider === 'GOOGLE_DRIVE' || file.cloudProvider === ('GDRIVE' as any)) {
+      try {
+        cloudStream = await getGDriveDownloadStream(file.remoteFileId);
+      } catch (err) {
+        console.warn('Google Drive download stream error:', err);
+      }
+    }
+
+    // Fallback stream for files stored prior or simulated
+    if (!cloudStream) {
+      const fallbackMsg = `[CloudFusion Encrypted File Stream]\nOriginal File Name: ${file.originalName}\nCloud Provider: ${file.cloudProvider}\nSHA-256 Checksum: ${file.checksumSHA256}\nTimestamp: ${new Date().toISOString()}\n`;
+      cloudStream = Readable.from(Buffer.from(fallbackMsg, 'utf-8'));
+    }
+
+    const key = getMasterKey();
+    const iv = Buffer.from(file.aesInitializationVector, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+
+    if (file.aesAuthTag) {
+      decipher.setAuthTag(Buffer.from(file.aesAuthTag, 'hex'));
+    }
+
+    // Set headers BEFORE piping
+    res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.originalName)}"`);
+    res.setHeader('Content-Length', Number(file.encryptedSizeBytes));
+
+    const handleError = (err: any) => {
+      console.error('[Decryption/Streaming Error]:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Decryption or streaming error occurred.' });
+      } else {
+        res.destroy();
+      }
+    };
+
+    cloudStream.on('error', handleError);
+    decipher.on('error', handleError);
+    res.on('error', handleError);
+
+    // Write the FILE_DOWNLOAD AuditLog entry AFTER the stream 'finish' / 'close'
+    res.on('finish', async () => {
+      try {
+        await prisma.auditLog.create({
+          data: {
+            userId,
+            action: 'FILE_DOWNLOAD',
+            details: `Downloaded and decrypted file "${file.originalName}" (${file.sizeBytes} bytes) from ${file.cloudProvider}.`,
+            ipAddress: req.ip,
+          },
+        });
+      } catch (logErr) {
+        console.warn('Audit log write notice:', logErr);
+      }
+    });
+
+    // Note: AES-GCM verifies the auth tag only at stream end, so tampering is detected after most bytes are sent (acceptable for v1).
+    cloudStream.pipe(decipher).pipe(res);
+  } catch (error: any) {
+    console.error('File Streaming Error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to stream decrypted file.' });
+    } else {
+      res.destroy();
+    }
+  }
+}
+
+export async function createDownloadToken(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user?.userId || req.user?.id;
     if (!userId) {
@@ -229,56 +320,65 @@ export async function downloadEncryptedFile(req: AuthRequest, res: Response): Pr
       return;
     }
 
-    let encryptedBuffer: Buffer | null = null;
+    const downloadToken = jwt.sign({ fileId: file.id, userId }, JWT_SECRET, { expiresIn: '60s' });
 
-    // Retrieve encrypted buffer from Google Drive API if provider is GOOGLE_DRIVE
-    if (file.cloudProvider === 'GOOGLE_DRIVE' || file.cloudProvider === ('GDRIVE' as any)) {
-      try {
-        encryptedBuffer = await downloadFileFromGDrive(file.remoteFileId);
-      } catch (err) {
-        console.warn('Google Drive download error:', err);
-      }
-    }
-
-    let finalFileBuffer: Buffer;
-
-    if (encryptedBuffer && file.aesInitializationVector && file.aesAuthTag) {
-      try {
-        finalFileBuffer = decryptFileBuffer(
-          encryptedBuffer,
-          file.aesInitializationVector,
-          file.aesAuthTag
-        );
-        console.log(`[CloudFusion Decrypt] Successfully decrypted "${file.originalName}" from live cloud!`);
-      } catch (decryptErr) {
-        console.warn('[CloudFusion Decrypt] Decryption warning, serving encrypted stream:', decryptErr);
-        finalFileBuffer = encryptedBuffer;
-      }
-    } else {
-      // Fallback/Demo stream for files stored prior or simulated
-      const fallbackMsg = `[CloudFusion Encrypted File Stream]\nOriginal File Name: ${file.originalName}\nCloud Provider: ${file.cloudProvider}\nSHA-256 Checksum: ${file.checksumSHA256}\nTimestamp: ${new Date().toISOString()}\n`;
-      finalFileBuffer = Buffer.from(fallbackMsg, 'utf-8');
-    }
-
-    // Log Audit Log entry
-    await prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'FILE_DOWNLOAD',
-        details: `Downloaded and decrypted file "${file.originalName}" (${finalFileBuffer.length} bytes) from ${file.cloudProvider}.`,
-        ipAddress: req.ip,
-      },
+    res.status(200).json({
+      downloadToken,
+      expiresAt: Date.now() + 60000,
     });
-
-    // Set response headers for file attachment download
-    res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.originalName)}"`);
-    res.setHeader('Content-Length', finalFileBuffer.length);
-
-    res.status(200).send(finalFileBuffer);
   } catch (error: any) {
-    console.error('File Download Error:', error);
-    res.status(500).json({ error: 'Failed to download file.', details: error?.message || String(error) });
+    console.error('Create Download Token Error:', error);
+    res.status(500).json({ error: 'Failed to create download token.' });
   }
 }
+
+export async function downloadFileWithToken(req: Request, res: Response): Promise<void> {
+  try {
+    const token = req.query.token as string;
+    if (!token) {
+      res.status(400).json({ error: 'Download token is required.' });
+      return;
+    }
+
+    let decoded: any;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtErr) {
+      res.status(403).json({ error: 'Invalid or expired download token.' });
+      return;
+    }
+
+    const { fileId, userId } = decoded;
+    if (!fileId || !userId) {
+      res.status(400).json({ error: 'Malformed download token.' });
+      return;
+    }
+
+    await streamDecryptedDownload(fileId, userId, req, res);
+  } catch (error: any) {
+    console.error('Token Download Error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to download file with token.' });
+    } else {
+      res.destroy();
+    }
+  }
+}
+
+export async function downloadEncryptedFile(req: AuthRequest, res: Response): Promise<void> {
+  const userId = req.user?.userId || req.user?.id;
+  if (!userId) {
+    res.status(401).json({ error: 'Unauthorized user session.' });
+    return;
+  }
+
+  const { id } = req.params;
+  if (!id) {
+    res.status(400).json({ error: 'File ID parameter missing.' });
+    return;
+  }
+
+  await streamDecryptedDownload(id, userId, req, res);
+}
+
 

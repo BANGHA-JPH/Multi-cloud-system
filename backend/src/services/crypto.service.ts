@@ -7,7 +7,7 @@ const AUTH_TAG_LENGTH = 16;
 /**
  * Get 32-byte encryption key from environment or fallback hash
  */
-function getMasterKey(): Buffer {
+export function getMasterKey(): Buffer {
   const masterSecret = process.env.ENCRYPTION_MASTER_KEY || 'cloudfusion_default_master_security_key_32_bytes!';
   return crypto.createHash('sha256').update(masterSecret).digest();
 }

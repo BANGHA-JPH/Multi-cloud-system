@@ -1,5 +1,6 @@
 import https from 'https';
 import querystring from 'querystring';
+import { Readable } from 'stream';
 
 export interface GDriveStorageUsage {
   provider: 'GOOGLE_DRIVE';
@@ -255,3 +256,41 @@ export async function downloadFileFromGDrive(remoteFileId: string): Promise<Buff
     return null;
   }
 }
+
+export async function getGDriveDownloadStream(remoteFileId: string): Promise<Readable | null> {
+  try {
+    const accessToken = await getAccessToken();
+    if (!accessToken) return null;
+
+    return new Promise((resolve) => {
+      const req = https.request(
+        `https://www.googleapis.com/drive/v3/files/${remoteFileId}?alt=media`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        },
+        (res) => {
+          if (res.statusCode !== 200) {
+            console.warn(`[Google Drive API] Download stream failed with status: ${res.statusCode}`);
+            resolve(null);
+            return;
+          }
+          resolve(res);
+        }
+      );
+
+      req.on('error', (err) => {
+        console.error('[Google Drive API] Stream error:', err);
+        resolve(null);
+      });
+
+      req.end();
+    });
+  } catch (err) {
+    console.error('[Google Drive API] Error getting download stream:', err);
+    return null;
+  }
+}
+
