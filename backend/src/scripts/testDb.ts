@@ -7,6 +7,11 @@ async function testConnection() {
   try {
     const result = await prisma.$queryRaw`SELECT 1 + 1 AS test;`;
     console.log('✅ Supabase PostgreSQL Connection SUCCESSFUL! Query result:', result);
+
+    const files = await prisma.fileMetadata.findMany({
+      where: { status: 'ACTIVE' },
+    });
+    console.log('✅ FileMetadata findMany query SUCCESSFUL! Count:', files.length);
   } catch (error) {
     console.error('❌ Connection Failed:', error);
   } finally {

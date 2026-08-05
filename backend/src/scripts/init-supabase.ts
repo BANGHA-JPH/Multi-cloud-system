@@ -14,14 +14,47 @@ async function main() {
   await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "storage_quotas" CASCADE;`);
   await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "users" CASCADE;`);
 
-  // Create Tables with clean PostgreSQL text columns
+  // Create Postgres Enum Types
+  await prisma.$executeRawUnsafe(`
+    DO $$ BEGIN
+        CREATE TYPE "Role" AS ENUM ('USER', 'ADMIN');
+    EXCEPTION
+        WHEN duplicate_object THEN null;
+    END $$;
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    DO $$ BEGIN
+        CREATE TYPE "CloudProvider" AS ENUM ('AWS_S3', 'GOOGLE_DRIVE', 'DROPBOX', 'MEGA', 'ONEDRIVE');
+    EXCEPTION
+        WHEN duplicate_object THEN null;
+    END $$;
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    DO $$ BEGIN
+        CREATE TYPE "FileStatus" AS ENUM ('ACTIVE', 'ARCHIVED', 'DELETED');
+    EXCEPTION
+        WHEN duplicate_object THEN null;
+    END $$;
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    DO $$ BEGIN
+        CREATE TYPE "AuditAction" AS ENUM ('USER_REGISTER', 'USER_LOGIN', 'FILE_UPLOAD', 'FILE_DOWNLOAD', 'FILE_DELETE', 'FILE_DECRYPT', 'INTEGRITY_CHECK', 'CLOUD_REBALANCE', 'CLOUD_ACCOUNT_LINK');
+    EXCEPTION
+        WHEN duplicate_object THEN null;
+    END $$;
+  `);
+
+  // Create Tables with matching PostgreSQL Enum columns
   await prisma.$executeRawUnsafe(`
     CREATE TABLE "users" (
       "id" TEXT PRIMARY KEY,
       "email" TEXT UNIQUE NOT NULL,
       "passwordHash" TEXT NOT NULL,
       "name" TEXT NOT NULL,
-      "role" TEXT NOT NULL DEFAULT 'USER',
+      "role" "Role" NOT NULL DEFAULT 'USER',
       "isMfaEnabled" BOOLEAN NOT NULL DEFAULT false,
       "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -32,7 +65,7 @@ async function main() {
     CREATE TABLE "cloud_accounts" (
       "id" TEXT PRIMARY KEY,
       "userId" TEXT NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
-      "provider" TEXT NOT NULL,
+      "provider" "CloudProvider" NOT NULL,
       "accountEmail" TEXT,
       "credentialsEncrypted" TEXT NOT NULL,
       "isPrimary" BOOLEAN NOT NULL DEFAULT false,
@@ -55,11 +88,11 @@ async function main() {
       "checksumSHA256" TEXT NOT NULL,
       "aesInitializationVector" TEXT NOT NULL,
       "aesAuthTag" TEXT,
-      "cloudProvider" TEXT NOT NULL,
+      "cloudProvider" "CloudProvider" NOT NULL,
       "remoteFileId" TEXT NOT NULL,
       "remoteFilePath" TEXT,
       "isEncrypted" BOOLEAN NOT NULL DEFAULT true,
-      "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+      "status" "FileStatus" NOT NULL DEFAULT 'ACTIVE',
       "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -69,7 +102,7 @@ async function main() {
     CREATE TABLE "audit_logs" (
       "id" TEXT PRIMARY KEY,
       "userId" TEXT NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
-      "action" TEXT NOT NULL,
+      "action" "AuditAction" NOT NULL,
       "details" TEXT,
       "ipAddress" TEXT,
       "userAgent" TEXT,
@@ -92,7 +125,7 @@ async function main() {
     );
   `);
 
-  console.log('✅ All 5 PostgreSQL Tables created cleanly on Supabase!');
+  console.log('✅ All PostgreSQL Enum types & 5 Tables created cleanly on Supabase!');
 }
 
 main()
