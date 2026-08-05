@@ -147,7 +147,7 @@ export default function CloudFusionAppDashboard() {
   const [selectedProviderFilter, setSelectedProviderFilter] = useState<string>('ALL');
   const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'size_desc' | 'size_asc'>('date_desc');
   const [downloadingFileIds, setDownloadingFileIds] = useState<string[]>([]);
-  const [showUploadSection, setShowUploadSection] = useState<boolean>(false);
+  const [showUploadSection, setShowUploadSection] = useState<boolean>(true);
 
   const formatStorageBytes = (bytesStr?: string) => {
     if (!bytesStr) return '0.00 GB';
