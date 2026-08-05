@@ -7,45 +7,23 @@ const prisma = new PrismaClient({
 async function main() {
   console.log('🚀 Initializing Supabase PostgreSQL Tables...');
 
-  // Drop existing tables
+  // Drop existing tables and types
   await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "audit_logs" CASCADE;`);
   await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "file_metadata" CASCADE;`);
   await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "cloud_accounts" CASCADE;`);
   await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "storage_quotas" CASCADE;`);
   await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "users" CASCADE;`);
 
+  await prisma.$executeRawUnsafe(`DROP TYPE IF EXISTS "AuditAction" CASCADE;`);
+  await prisma.$executeRawUnsafe(`DROP TYPE IF EXISTS "FileStatus" CASCADE;`);
+  await prisma.$executeRawUnsafe(`DROP TYPE IF EXISTS "CloudProvider" CASCADE;`);
+  await prisma.$executeRawUnsafe(`DROP TYPE IF EXISTS "Role" CASCADE;`);
+
   // Create Postgres Enum Types
-  await prisma.$executeRawUnsafe(`
-    DO $$ BEGIN
-        CREATE TYPE "Role" AS ENUM ('USER', 'ADMIN');
-    EXCEPTION
-        WHEN duplicate_object THEN null;
-    END $$;
-  `);
-
-  await prisma.$executeRawUnsafe(`
-    DO $$ BEGIN
-        CREATE TYPE "CloudProvider" AS ENUM ('AWS_S3', 'GOOGLE_DRIVE', 'DROPBOX', 'MEGA', 'ONEDRIVE');
-    EXCEPTION
-        WHEN duplicate_object THEN null;
-    END $$;
-  `);
-
-  await prisma.$executeRawUnsafe(`
-    DO $$ BEGIN
-        CREATE TYPE "FileStatus" AS ENUM ('ACTIVE', 'ARCHIVED', 'DELETED');
-    EXCEPTION
-        WHEN duplicate_object THEN null;
-    END $$;
-  `);
-
-  await prisma.$executeRawUnsafe(`
-    DO $$ BEGIN
-        CREATE TYPE "AuditAction" AS ENUM ('USER_REGISTER', 'USER_LOGIN', 'FILE_UPLOAD', 'FILE_DOWNLOAD', 'FILE_DELETE', 'FILE_DECRYPT', 'INTEGRITY_CHECK', 'CLOUD_REBALANCE', 'CLOUD_ACCOUNT_LINK');
-    EXCEPTION
-        WHEN duplicate_object THEN null;
-    END $$;
-  `);
+  await prisma.$executeRawUnsafe(`CREATE TYPE "Role" AS ENUM ('USER', 'ADMIN');`);
+  await prisma.$executeRawUnsafe(`CREATE TYPE "CloudProvider" AS ENUM ('AWS_S3', 'GOOGLE_DRIVE', 'DROPBOX', 'MEGA', 'ONEDRIVE');`);
+  await prisma.$executeRawUnsafe(`CREATE TYPE "FileStatus" AS ENUM ('ACTIVE', 'ARCHIVED', 'DELETED');`);
+  await prisma.$executeRawUnsafe(`CREATE TYPE "AuditAction" AS ENUM ('USER_REGISTER', 'USER_LOGIN', 'FILE_UPLOAD', 'FILE_DOWNLOAD', 'FILE_DELETE', 'FILE_DECRYPT', 'INTEGRITY_CHECK', 'CLOUD_REBALANCE', 'CLOUD_ACCOUNT_LINK');`);
 
   // Create Tables with matching PostgreSQL Enum columns
   await prisma.$executeRawUnsafe(`
