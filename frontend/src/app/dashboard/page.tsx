@@ -171,6 +171,12 @@ export default function CloudFusionAppDashboard() {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
       });
+      if (res.status === 401 || res.status === 403 || res.status === 440) {
+        localStorage.removeItem('cloudfusion_token');
+        localStorage.removeItem('cloudfusion_user');
+        router.push('/login');
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setStorageQuota(data);
@@ -187,6 +193,12 @@ export default function CloudFusionAppDashboard() {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
       });
+      if (res.status === 401 || res.status === 403 || res.status === 440) {
+        localStorage.removeItem('cloudfusion_token');
+        localStorage.removeItem('cloudfusion_user');
+        router.push('/login');
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         if (data.accounts && Array.isArray(data.accounts)) {
@@ -220,6 +232,12 @@ export default function CloudFusionAppDashboard() {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
       });
+      if (res.status === 401 || res.status === 403 || res.status === 440) {
+        localStorage.removeItem('cloudfusion_token');
+        localStorage.removeItem('cloudfusion_user');
+        router.push('/login');
+        return;
+      }
 
       if (!res.ok) {
         throw new Error(`Failed to fetch file library (${res.status})`);
