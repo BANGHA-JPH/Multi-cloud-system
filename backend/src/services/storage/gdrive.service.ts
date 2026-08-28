@@ -11,12 +11,41 @@ export interface GDriveStorageUsage {
   userName?: string;
 }
 
-function getAccessToken(): Promise<string | null> {
+export interface GDriveUserCredentials {
+  refreshToken?: string;
+}
+
+const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+
+export function getGDriveAuthUrl(redirectUri: string, state?: string): string {
+  const clientId = process.env.GOOGLE_CLIENT_ID || '';
+  const scopes = [
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile',
+  ].join(' ');
+
+  const queryObj: Record<string, string> = {
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: scopes,
+    access_type: 'offline',
+    prompt: 'consent',
+  };
+  if (state) {
+    queryObj.state = state;
+  }
+
+  return `${GOOGLE_AUTH_URL}?${querystring.stringify(queryObj)}`;
+}
+
+export function getAccessToken(credentials?: GDriveUserCredentials): Promise<string | null> {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+  const refreshToken = credentials?.refreshToken || process.env.GOOGLE_REFRESH_TOKEN;
 
-  if (!clientId || !clientSecret || !refreshToken) {
+  if (!clientId || !clientSecret || !refreshToken || refreshToken.includes('placeholder')) {
     return Promise.resolve(null);
   }
 
@@ -89,18 +118,22 @@ function fetchDriveAbout(accessToken: string): Promise<any> {
   });
 }
 
-export async function getGDriveStorageUsage(): Promise<GDriveStorageUsage> {
+export async function getGDriveStorageUsage(credentials?: GDriveUserCredentials): Promise<GDriveStorageUsage> {
   const DEFAULT_GDRIVE_FREE_TIER = BigInt(16106127360); // 15 GB Fallback
 
   try {
-    const accessToken = await getAccessToken();
+    const accessToken = await getAccessToken(credentials);
     if (!accessToken) {
+      const isConnected = !!(
+        credentials?.refreshToken ||
+        (process.env.GOOGLE_REFRESH_TOKEN && !process.env.GOOGLE_REFRESH_TOKEN.includes('placeholder'))
+      );
       return {
         provider: 'GOOGLE_DRIVE',
         totalBytes: DEFAULT_GDRIVE_FREE_TIER,
         usedBytes: BigInt(0),
         freeBytes: DEFAULT_GDRIVE_FREE_TIER,
-        isConnected: true,
+        isConnected,
       };
     }
 
@@ -136,10 +169,11 @@ export async function getGDriveStorageUsage(): Promise<GDriveStorageUsage> {
 export async function uploadFileToGDrive(
   filename: string,
   mimeType: string,
-  fileBuffer: Buffer
+  fileBuffer: Buffer,
+  credentials?: GDriveUserCredentials
 ): Promise<{ id: string; name: string } | null> {
   try {
-    const accessToken = await getAccessToken();
+    const accessToken = await getAccessToken(credentials);
     if (!accessToken) return null;
 
     const boundary = '-------CloudFusionBoundary314159';
@@ -210,9 +244,12 @@ export async function uploadFileToGDrive(
   }
 }
 
-export async function downloadFileFromGDrive(remoteFileId: string): Promise<Buffer | null> {
+export async function downloadFileFromGDrive(
+  remoteFileId: string,
+  credentials?: GDriveUserCredentials
+): Promise<Buffer | null> {
   try {
-    const accessToken = await getAccessToken();
+    const accessToken = await getAccessToken(credentials);
     if (!accessToken) return null;
 
     return new Promise((resolve) => {

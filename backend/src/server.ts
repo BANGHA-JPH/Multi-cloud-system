@@ -3,9 +3,17 @@ import { connectDB } from './config/db';
 
 const PORT = process.env.PORT || 5000;
 
+process.on('unhandledRejection', (reason) => {
+  console.warn('⚠️ Server Notice [Unhandled Rejection]:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.warn('⚠️ Server Notice [Uncaught Exception]:', err);
+});
+
 async function bootstrap() {
   console.log('🚀 Starting CloudFusion Multi-Cloud Backend System...');
-  
+
   // Connect to Database
   await connectDB();
 

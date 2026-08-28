@@ -50,7 +50,7 @@ export default function CloudFusionAppDashboard() {
   const [user, setUser] = useState<{ name?: string; email?: string } | null>(null);
 
   const [activeNav, setActiveNav] = useState<'dashboard' | 'files' | 'analytics' | 'settings' | 'notifications'>('dashboard');
-  const [selectedDestination, setSelectedDestination] = useState<'AI' | 'S3' | 'DROPBOX' | 'GDRIVE' | 'AZURE'>('AI');
+  const [selectedDestination, setSelectedDestination] = useState<'AI' | 'S3' | 'DROPBOX' | 'GDRIVE' | 'ONEDRIVE' | 'MEGA'>('AI');
   const [dragActive, setDragActive] = useState(false);
 
   // Notification States
@@ -98,6 +98,106 @@ export default function CloudFusionAppDashboard() {
   // Google Drive Modal State
   const [showGDriveModal, setShowGDriveModal] = useState(false);
   const [isConnectingDrive, setIsConnectingDrive] = useState(false);
+
+  // AWS S3 Modal State
+  const [showS3Modal, setShowS3Modal] = useState(false);
+  const [s3Mode, setS3Mode] = useState<'managed' | 'custom'>('managed');
+  const [s3AccessKey, setS3AccessKey] = useState('');
+  const [s3SecretKey, setS3SecretKey] = useState('');
+  const [s3Region, setS3Region] = useState('eu-north-1');
+  const [s3Bucket, setS3Bucket] = useState('');
+  const [isSavingS3, setIsSavingS3] = useState(false);
+  const [s3Error, setS3Error] = useState<string | null>(null);
+
+  // MEGA Modal State
+  const [showMegaModal, setShowMegaModal] = useState(false);
+  const [megaMode, setMegaMode] = useState<'managed' | 'custom'>('managed');
+  const [megaEmail, setMegaEmail] = useState('');
+  const [megaPassword, setMegaPassword] = useState('');
+  const [isSavingMega, setIsSavingMega] = useState(false);
+  const [megaError, setMegaError] = useState<string | null>(null);
+
+  const handleConnectS3 = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsSavingS3(true);
+    setS3Error(null);
+
+    try {
+      const token = localStorage.getItem('cloudfusion_token');
+      const payload: any = { provider: 'AWS_S3' };
+      if (s3Mode === 'custom') {
+        payload.accessKeyId = s3AccessKey;
+        payload.secretAccessKey = s3SecretKey;
+        payload.region = s3Region;
+        payload.bucketName = s3Bucket;
+      }
+
+      const res = await fetch('http://localhost:5000/api/storage/connect', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to authenticate AWS S3.');
+      }
+
+      setShowS3Modal(false);
+      setToastMessage('🎉 AWS S3 connected successfully to your storage mesh!');
+      setTimeout(() => setToastMessage(null), 5000);
+      fetchStorageQuota();
+      fetchCloudAccounts();
+    } catch (err: any) {
+      setS3Error(err.message || 'Verification failed.');
+    } finally {
+      setIsSavingS3(false);
+    }
+  };
+
+  const handleConnectMega = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsSavingMega(true);
+    setMegaError(null);
+
+    try {
+      const token = localStorage.getItem('cloudfusion_token');
+      const payload: any = { provider: 'MEGA' };
+      if (megaMode === 'custom') {
+        payload.email = megaEmail;
+        payload.password = megaPassword;
+      }
+
+      const res = await fetch('http://localhost:5000/api/storage/connect', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to authenticate with MEGA.');
+      }
+
+      setShowMegaModal(false);
+      setToastMessage('🎉 MEGA 20 GB Cloud Node Connected Successfully!');
+      setTimeout(() => setToastMessage(null), 5000);
+      fetchStorageQuota();
+      fetchCloudAccounts();
+    } catch (err: any) {
+      setMegaError(err.message || 'Authentication failed.');
+    } finally {
+      setIsSavingMega(false);
+    }
+  };
 
   const markAllNotificationsAsRead = () => {
     setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
@@ -163,6 +263,18 @@ export default function CloudFusionAppDashboard() {
       if (res.ok) {
         const data = await res.json();
         setStorageQuota(data);
+        if (data.providers) {
+          setConnectors((prev) =>
+            prev.map((c) => {
+              const provKey = c.id.toLowerCase();
+              const providerInfo = data.providers[provKey];
+              if (providerInfo && providerInfo.isConnected) {
+                return { ...c, isLinked: true };
+              }
+              return c;
+            })
+          );
+        }
       }
     } catch (e) {
       console.warn('Quota fetch notice:', e);
@@ -264,7 +376,7 @@ export default function CloudFusionAppDashboard() {
               name: f.originalName,
               provider: providerName,
               providerBadgeClass: badgeClass,
-              sizeProgress: `${(f.sizeBytes / (1024 * 1024)).toFixed(1)} MB • Encrypted & Saved`,
+              sizeProgress: `${(f.sizeBytes / (1024 * 1024)).toFixed(1)} MB â€¢ Encrypted & Saved`,
               percentage: 100,
               status: 'COMPLETE',
               icon: f.mimeType?.includes('image')
@@ -330,6 +442,66 @@ export default function CloudFusionAppDashboard() {
     if (!token) {
       router.push('/login');
     } else {
+      if (typeof window !== 'undefined') {
+        const urlParams = new URLSearchParams(window.location.search);
+        const connectedProvider = urlParams.get('connected');
+        const authError = urlParams.get('error');
+
+        if (connectedProvider) {
+          const providerNameMap: Record<string, string> = {
+            onedrive: 'Microsoft OneDrive (+5 GB)',
+            gdrive: 'Google Drive (+15 GB)',
+            dropbox: 'Dropbox (+2 GB)',
+          };
+          const providerEnumMap: Record<string, string> = {
+            onedrive: 'ONEDRIVE',
+            gdrive: 'GOOGLE_DRIVE',
+            dropbox: 'DROPBOX',
+          };
+          const name = providerNameMap[connectedProvider] || connectedProvider;
+          const targetEnum = providerEnumMap[connectedProvider];
+
+          if (targetEnum) {
+            fetch('http://localhost:5000/api/storage/connect', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+              },
+              credentials: 'include',
+              body: JSON.stringify({ provider: targetEnum }),
+            })
+              .then(() => {
+                fetchStorageQuota();
+                fetchCloudAccounts();
+              })
+              .catch((err) => console.warn('Account link sync warning:', err));
+          }
+
+          setNotifications((prev) => [
+            {
+              id: `notif-${Date.now()}`,
+              title: `${name} Connected!`,
+              message: `${name} has been successfully authenticated and linked to your multi-cloud mesh!`,
+              type: 'SUCCESS',
+              timestamp: 'Just now',
+              isRead: false,
+              icon: 'cloud_done',
+            },
+            ...prev,
+          ]);
+          setToastMessage(`ðŸŽ‰ ${name} connected successfully!`);
+          setTimeout(() => setToastMessage(null), 5000);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+
+        if (authError) {
+          setToastMessage(`OAuth notice: ${authError}`);
+          setTimeout(() => setToastMessage(null), 5000);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      }
+
       fetchStorageQuota();
       fetchCloudAccounts();
       fetchUserFiles();
@@ -479,7 +651,8 @@ export default function CloudFusionAppDashboard() {
       S3: { name: 'AWS S3', badge: 'bg-amber-500/20 text-amber-400 border-amber-500/30', enum: 'AWS_S3' },
       DROPBOX: { name: 'Dropbox', badge: 'bg-blue-500/20 text-blue-400 border-blue-500/30', enum: 'DROPBOX' },
       GDRIVE: { name: 'Google Drive', badge: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30', enum: 'GOOGLE_DRIVE' },
-      AZURE: { name: 'Azure', badge: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30', enum: 'AZURE' },
+      ONEDRIVE: { name: 'MS OneDrive', badge: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30', enum: 'ONEDRIVE' },
+      MEGA: { name: 'MEGA', badge: 'bg-rose-500/20 text-rose-400 border-rose-500/30', enum: 'MEGA' },
     };
 
     const sel = targetProviderMap[selectedDestination];
@@ -675,6 +848,368 @@ export default function CloudFusionAppDashboard() {
                 </span>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* AWS S3 Connection Configuration Modal */}
+      {showS3Modal && (
+        <div className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-[#161c1e] border border-amber-500/30 rounded-3xl p-8 max-w-lg w-full shadow-2xl space-y-6 relative text-left">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center">
+                  <span className="material-symbols-outlined text-2xl">database</span>
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-xl text-white tracking-tight">Connect AWS S3 Bucket</h3>
+                  <p className="text-xs text-[#8b90a0]">Enterprise Zero-Knowledge Cloud Storage</p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShowS3Modal(false)}
+                className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white/70 hover:text-white flex items-center justify-center transition-colors"
+              >
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
+            </div>
+
+            {/* Error Message */}
+            {s3Error && (
+              <div className="bg-rose-500/20 border border-rose-500/30 rounded-2xl p-3.5 text-xs text-rose-300 flex items-center space-x-2">
+                <span className="material-symbols-outlined text-base text-rose-400">error</span>
+                <span>{s3Error}</span>
+              </div>
+            )}
+
+            {/* Mode Switcher */}
+            <div className="grid grid-cols-2 p-1 bg-[#101415] rounded-2xl border border-white/10 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setS3Mode('managed')}
+                className={`py-2 px-3 rounded-xl transition-all flex items-center justify-center space-x-1.5 ${
+                  s3Mode === 'managed'
+                    ? 'bg-amber-500 text-black shadow-md'
+                    : 'text-[#8b90a0] hover:text-white'
+                }`}
+              >
+                <span className="material-symbols-outlined text-sm">bolt</span>
+                <span>1-Click Fast Connect</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setS3Mode('custom')}
+                className={`py-2 px-3 rounded-xl transition-all flex items-center justify-center space-x-1.5 ${
+                  s3Mode === 'custom'
+                    ? 'bg-amber-500 text-black shadow-md'
+                    : 'text-[#8b90a0] hover:text-white'
+                }`}
+              >
+                <span className="material-symbols-outlined text-sm">key</span>
+                <span>Custom IAM Keys</span>
+              </button>
+            </div>
+
+            {s3Mode === 'managed' ? (
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 space-y-2 text-xs text-[#c1c6d7]">
+                  <div className="flex items-center space-x-2 font-bold text-amber-400">
+                    <span className="material-symbols-outlined text-base">verified_user</span>
+                    <span>Zero Setup Required</span>
+                  </div>
+                  <p>
+                    Instantly links an isolated, client-side AES-256 encrypted storage vault in the CloudFusion S3 mesh without needing an AWS account or secret keys.
+                  </p>
+                </div>
+
+                <div className="pt-2 flex items-center justify-end space-x-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowS3Modal(false)}
+                    className="px-5 py-2.5 rounded-full text-xs font-bold text-[#c1c6d7] hover:text-white bg-white/5 hover:bg-white/10 transition-colors"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isSavingS3}
+                    onClick={() => handleConnectS3()}
+                    className="bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs px-6 py-2.5 rounded-full shadow-lg transition-all flex items-center space-x-2 disabled:opacity-50"
+                  >
+                    {isSavingS3 ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                        <span>Connecting S3...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-sm">bolt</span>
+                        <span>1-Click Connect S3</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleConnectS3} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-[#c1c6d7] mb-1.5 uppercase tracking-wider">
+                    AWS Access Key ID
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={s3AccessKey}
+                    onChange={(e) => setS3AccessKey(e.target.value)}
+                    placeholder="e.g. AKIA..."
+                    className="w-full bg-[#101415] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder:text-white/20 focus:outline-none focus:border-amber-500 transition-colors"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[#c1c6d7] mb-1.5 uppercase tracking-wider">
+                    AWS Secret Access Key
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={s3SecretKey}
+                    onChange={(e) => setS3SecretKey(e.target.value)}
+                    placeholder="Your AWS Secret Access Key"
+                    className="w-full bg-[#101415] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder:text-white/20 focus:outline-none focus:border-amber-500 transition-colors"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-[#c1c6d7] mb-1.5 uppercase tracking-wider">
+                      AWS Region
+                    </label>
+                    <select
+                      value={s3Region}
+                      onChange={(e) => setS3Region(e.target.value)}
+                      className="w-full bg-[#101415] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500 transition-colors"
+                    >
+                      <option value="eu-north-1">eu-north-1 (Stockholm)</option>
+                      <option value="us-east-1">us-east-1 (N. Virginia)</option>
+                      <option value="us-west-2">us-west-2 (Oregon)</option>
+                      <option value="eu-west-1">eu-west-1 (Ireland)</option>
+                      <option value="eu-central-1">eu-central-1 (Frankfurt)</option>
+                      <option value="ap-southeast-1">ap-southeast-1 (Singapore)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#c1c6d7] mb-1.5 uppercase tracking-wider">
+                      S3 Bucket Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={s3Bucket}
+                      onChange={(e) => setS3Bucket(e.target.value)}
+                      placeholder="Bucket name"
+                      className="w-full bg-[#101415] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder:text-white/20 focus:outline-none focus:border-amber-500 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-3 flex items-center justify-end space-x-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowS3Modal(false)}
+                    className="px-5 py-2.5 rounded-full text-xs font-bold text-[#c1c6d7] hover:text-white bg-white/5 hover:bg-white/10 transition-colors"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isSavingS3}
+                    className="bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs px-6 py-2.5 rounded-full shadow-lg transition-all flex items-center space-x-2 disabled:opacity-50"
+                  >
+                    {isSavingS3 ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                        <span>Verifying S3...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-sm">verified</span>
+                        <span>Verify & Connect S3</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MEGA Cloud Connection Modal */}
+      {showMegaModal && (
+        <div className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-[#161c1e] border border-rose-500/30 rounded-3xl p-8 max-w-lg w-full shadow-2xl space-y-6 relative text-left">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-500/20 text-rose-400 border border-rose-500/30 flex items-center justify-center font-extrabold text-xl">
+                  M
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-xl text-white tracking-tight">Connect MEGA Cloud</h3>
+                  <p className="text-xs text-[#8b90a0]">20 GB High-Capacity Zero-Knowledge Storage</p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShowMegaModal(false)}
+                className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white/70 hover:text-white flex items-center justify-center transition-colors"
+              >
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
+            </div>
+
+            {/* Error Message */}
+            {megaError && (
+              <div className="bg-rose-500/20 border border-rose-500/30 rounded-2xl p-3.5 text-xs text-rose-300 flex items-center space-x-2">
+                <span className="material-symbols-outlined text-base text-rose-400">error</span>
+                <span>{megaError}</span>
+              </div>
+            )}
+
+            {/* Mode Switcher */}
+            <div className="grid grid-cols-2 p-1 bg-[#101415] rounded-2xl border border-white/10 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setMegaMode('managed')}
+                className={`py-2 px-3 rounded-xl transition-all flex items-center justify-center space-x-1.5 ${
+                  megaMode === 'managed'
+                    ? 'bg-rose-600 text-white shadow-md'
+                    : 'text-[#8b90a0] hover:text-white'
+                }`}
+              >
+                <span className="material-symbols-outlined text-sm">bolt</span>
+                <span>1-Click Fast Connect</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMegaMode('custom')}
+                className={`py-2 px-3 rounded-xl transition-all flex items-center justify-center space-x-1.5 ${
+                  megaMode === 'custom'
+                    ? 'bg-rose-600 text-white shadow-md'
+                    : 'text-[#8b90a0] hover:text-white'
+                }`}
+              >
+                <span className="material-symbols-outlined text-sm">account_circle</span>
+                <span>Custom Account</span>
+              </button>
+            </div>
+
+            {megaMode === 'managed' ? (
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/20 space-y-2 text-xs text-[#c1c6d7]">
+                  <div className="flex items-center space-x-2 font-bold text-rose-400">
+                    <span className="material-symbols-outlined text-base">cloud_done</span>
+                    <span>Instant 20 GB Storage Pool</span>
+                  </div>
+                  <p>
+                    Seamlessly attaches a 20 GB zero-knowledge encrypted storage node to your mesh with one click.
+                  </p>
+                </div>
+
+                <div className="pt-2 flex items-center justify-end space-x-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowMegaModal(false)}
+                    className="px-5 py-2.5 rounded-full text-xs font-bold text-[#c1c6d7] hover:text-white bg-white/5 hover:bg-white/10 transition-colors"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isSavingMega}
+                    onClick={() => handleConnectMega()}
+                    className="bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs px-6 py-2.5 rounded-full shadow-lg transition-all flex items-center space-x-2 disabled:opacity-50"
+                  >
+                    {isSavingMega ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>Linking MEGA...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-sm">bolt</span>
+                        <span>1-Click Connect MEGA</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleConnectMega} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-[#c1c6d7] mb-1.5 uppercase tracking-wider">
+                    MEGA Account Email
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={megaEmail}
+                    onChange={(e) => setMegaEmail(e.target.value)}
+                    placeholder="e.g. user@gmail.com"
+                    className="w-full bg-[#101415] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-rose-500 transition-colors"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[#c1c6d7] mb-1.5 uppercase tracking-wider">
+                    MEGA Master Password
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={megaPassword}
+                    onChange={(e) => setMegaPassword(e.target.value)}
+                    placeholder="Your MEGA password"
+                    className="w-full bg-[#101415] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-rose-500 transition-colors"
+                  />
+                </div>
+
+                <div className="pt-3 flex items-center justify-end space-x-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowMegaModal(false)}
+                    className="px-5 py-2.5 rounded-full text-xs font-bold text-[#c1c6d7] hover:text-white bg-white/5 hover:bg-white/10 transition-colors"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isSavingMega}
+                    className="bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs px-6 py-2.5 rounded-full shadow-lg transition-all flex items-center space-x-2 disabled:opacity-50"
+                  >
+                    {isSavingMega ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>Authenticating MEGA...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-sm">cloud_sync</span>
+                        <span>Verify & Link MEGA</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}
@@ -1205,6 +1740,52 @@ export default function CloudFusionAppDashboard() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Microsoft OneDrive Card */}
+                    <div className="bg-[#1d2022] p-4 rounded-2xl border border-white/10 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-8 h-8 rounded-xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                            <span className="material-symbols-outlined text-lg">cloud</span>
+                          </div>
+                          <div>
+                            <div className="font-bold text-sm text-white">Microsoft OneDrive</div>
+                            <div className="text-[10px] text-[#8b90a0]">Microsoft Graph API</div>
+                          </div>
+                        </div>
+
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-extrabold border ${
+                            storageQuota?.providers?.onedrive?.isConnected
+                              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                              : 'bg-[#323537] text-[#8b90a0] border-white/10'
+                          }`}
+                        >
+                          {storageQuota?.providers?.onedrive?.isConnected ? 'CONNECTED' : 'DISCONNECTED'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                        <div className="bg-[#101415] p-2 rounded-xl border border-white/5">
+                          <div className="text-[10px] text-[#8b90a0]">Total</div>
+                          <div className="font-bold text-white mt-0.5">
+                            {formatStorageBytes(storageQuota?.providers?.onedrive?.total)}
+                          </div>
+                        </div>
+                        <div className="bg-[#101415] p-2 rounded-xl border border-white/5">
+                          <div className="text-[10px] text-[#8b90a0]">Used</div>
+                          <div className="font-bold text-amber-400 mt-0.5">
+                            {formatStorageBytes(storageQuota?.providers?.onedrive?.used)}
+                          </div>
+                        </div>
+                        <div className="bg-[#101415] p-2 rounded-xl border border-white/5">
+                          <div className="text-[10px] text-[#8b90a0]">Free</div>
+                          <div className="font-bold text-emerald-400 mt-0.5">
+                            {formatStorageBytes(storageQuota?.providers?.onedrive?.free)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1336,7 +1917,7 @@ export default function CloudFusionAppDashboard() {
                           : 'bg-blue-600 hover:bg-blue-500 text-white'
                       }`}
                     >
-                      {archiveApplied ? '✓ Applied' : 'Apply'}
+                      {archiveApplied ? 'âœ“ Applied' : 'Apply'}
                     </button>
                   </div>
 
@@ -1360,7 +1941,7 @@ export default function CloudFusionAppDashboard() {
                           : 'bg-blue-600 hover:bg-blue-500 text-white'
                       }`}
                     >
-                      {dedupAnalyzed ? '✓ Done' : 'Analyze'}
+                      {dedupAnalyzed ? 'âœ“ Done' : 'Analyze'}
                     </button>
                   </div>
                 </div>
@@ -1428,15 +2009,25 @@ export default function CloudFusionAppDashboard() {
                       ) : (
                         <button
                           onClick={() => {
-                            if (conn.id === 'gdrive') {
-                              setShowGDriveModal(true);
+                            const token = localStorage.getItem('cloudfusion_token') || '';
+                            if (conn.id === 'onedrive') {
+                              window.location.href = `http://localhost:5000/api/storage/onedrive/login?token=${encodeURIComponent(token)}`;
+                            } else if (conn.id === 'gdrive') {
+                              window.location.href = `http://localhost:5000/api/storage/gdrive/login?token=${encodeURIComponent(token)}`;
+                            } else if (conn.id === 'dropbox') {
+                              window.location.href = `http://localhost:5000/api/storage/dropbox/login?token=${encodeURIComponent(token)}`;
+                            } else if (conn.id === 's3') {
+                              setShowS3Modal(true);
+                            } else if (conn.id === 'mega') {
+                              setShowMegaModal(true);
                             } else {
                               toggleConnectorLink(conn.id);
                             }
                           }}
-                          className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-6 py-2.5 rounded-full shadow-lg transition-all"
+                          className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-6 py-2.5 rounded-full shadow-lg transition-all flex items-center gap-1.5"
                         >
-                          Connect
+                          <span className="material-symbols-outlined text-sm">open_in_new</span>
+                          <span>Connect</span>
                         </button>
                       )}
                     </div>
@@ -1475,7 +2066,7 @@ export default function CloudFusionAppDashboard() {
                           : 'bg-[#1d2022] border-white/5 text-[#8b90a0] hover:text-white'
                       }`}
                     >
-                      <div className="text-xs font-bold text-primary">⚡ Max Free Quota</div>
+                      <div className="text-xs font-bold text-primary">âš¡ Max Free Quota</div>
                       <div className="text-[11px] mt-1">Prefers MEGA (20GB) & Drive (15GB) first.</div>
                     </button>
 
@@ -1487,7 +2078,7 @@ export default function CloudFusionAppDashboard() {
                           : 'bg-[#1d2022] border-white/5 text-[#8b90a0] hover:text-white'
                       }`}
                     >
-                      <div className="text-xs font-bold text-purple-400">🚀 Lowest Latency</div>
+                      <div className="text-xs font-bold text-purple-400">ðŸš€ Lowest Latency</div>
                       <div className="text-[11px] mt-1">Selects fastest ping cloud server.</div>
                     </button>
 
@@ -1499,7 +2090,7 @@ export default function CloudFusionAppDashboard() {
                           : 'bg-[#1d2022] border-white/5 text-[#8b90a0] hover:text-white'
                       }`}
                     >
-                      <div className="text-xs font-bold text-cyan-400">🛡️ Dual Mirroring</div>
+                      <div className="text-xs font-bold text-cyan-400">ðŸ›¡ï¸ Dual Mirroring</div>
                       <div className="text-[11px] mt-1">Replicates file across 2 providers.</div>
                     </button>
                   </div>
@@ -1733,82 +2324,230 @@ export default function CloudFusionAppDashboard() {
               </div>
 
               <div className="space-y-5">
-                <h2 className="font-extrabold text-2xl text-[#e0e3e5]">Fusion Destination</h2>
-
-                <div
-                  onClick={() => setSelectedDestination('AI')}
-                  className={`relative p-6 rounded-3xl cursor-pointer transition-all border ${
-                    selectedDestination === 'AI'
-                      ? 'bg-blue-600 text-white shadow-2xl border-blue-400/50 scale-[1.01]'
-                      : 'bg-slate-900/60 border-white/10 text-slate-200 hover:border-blue-500/40'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/20 text-white text-[10px] font-extrabold tracking-wider uppercase w-fit mb-3">
-                    <span className="material-symbols-outlined text-xs">auto_awesome</span>
-                    <span>RECOMMENDED</span>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="font-extrabold text-2xl text-[#e0e3e5]">Fusion Destination</h2>
+                    <p className="text-xs text-[#8b90a0] mt-0.5">Select a destination or let AI auto-route to the server with the most free space</p>
                   </div>
-
-                  <h3 className="font-extrabold text-xl">Fusion AI</h3>
-                  <p className="text-xs opacity-90 mt-1">Let our AI optimize cost and speed across all 5 clouds.</p>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {/* AI / Smart Balancer Card */}
+                {(() => {
+                  const candidateList = [
+                    { id: 'ONEDRIVE', name: 'Microsoft OneDrive', freeBytes: Number(storageQuota?.providers?.onedrive?.free || 0), isConnected: !!storageQuota?.providers?.onedrive?.isConnected },
+                    { id: 'S3', name: 'AWS S3', freeBytes: Number(storageQuota?.providers?.s3?.free || 0), isConnected: !!storageQuota?.providers?.s3?.isConnected },
+                    { id: 'GDRIVE', name: 'Google Drive', freeBytes: Number(storageQuota?.providers?.gdrive?.free || 0), isConnected: !!storageQuota?.providers?.gdrive?.isConnected },
+                    { id: 'DROPBOX', name: 'Dropbox', freeBytes: Number(storageQuota?.providers?.dropbox?.free || 0), isConnected: !!storageQuota?.providers?.dropbox?.isConnected },
+                    { id: 'MEGA', name: 'MEGA', freeBytes: Number(storageQuota?.providers?.mega?.free || 0), isConnected: !!storageQuota?.providers?.mega?.isConnected },
+                  ].filter((p) => p.isConnected);
+
+                  candidateList.sort((a, b) => b.freeBytes - a.freeBytes);
+                  const topCandidate = candidateList[0] || { id: 'ONEDRIVE', name: 'Microsoft OneDrive', freeBytes: 3972844748 };
+
+                  return (
+                    <div
+                      onClick={() => setSelectedDestination('AI')}
+                      className={`relative p-6 rounded-3xl cursor-pointer transition-all border ${
+                        selectedDestination === 'AI'
+                          ? 'bg-blue-600 text-white shadow-2xl border-blue-400/50 scale-[1.01]'
+                          : 'bg-slate-900/60 border-white/10 text-slate-200 hover:border-blue-500/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/20 text-white text-[10px] font-extrabold tracking-wider uppercase w-fit">
+                          <span className="material-symbols-outlined text-xs">auto_awesome</span>
+                          <span>AI SMART LOAD BALANCER</span>
+                        </div>
+                        <div className="text-[11px] font-bold px-3 py-1 rounded-full bg-emerald-400/20 text-emerald-300 border border-emerald-400/30 flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-xs">bolt</span>
+                          <span>Targeting: {topCandidate.name} ({formatStorageBytes(topCandidate.freeBytes.toString())} Free)</span>
+                        </div>
+                      </div>
+
+                      <h3 className="font-extrabold text-xl">Fusion AI Auto-Route</h3>
+                      <p className="text-xs opacity-90 mt-1">
+                        Automatically evaluates all connected clouds and streams uploads to the node with the highest free capacity.
+                      </p>
+                    </div>
+                  );
+                })()}
+
+                {/* Specific Provider Selector Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                  {/* ONEDRIVE */}
+                  <div
+                    onClick={() => setSelectedDestination('ONEDRIVE')}
+                    className={`glass-panel p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden ${
+                      selectedDestination === 'ONEDRIVE'
+                        ? 'border-cyan-400 bg-cyan-500/20 shadow-xl ring-2 ring-cyan-400/40'
+                        : storageQuota?.providers?.onedrive?.isConnected
+                        ? 'border-cyan-500/30 bg-cyan-950/10 hover:border-cyan-400'
+                        : 'border-white/5 opacity-60 hover:opacity-100'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="material-symbols-outlined text-cyan-400 text-2xl">cloud</span>
+                      {storageQuota?.providers?.onedrive?.isConnected ? (
+                        <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                          CONNECTED
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-white/5 text-[#8b90a0]">
+                          OFFLINE
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-bold text-sm text-white">MS OneDrive</h4>
+                    <p className="text-[10px] text-cyan-300 font-semibold mt-1">
+                      {storageQuota?.providers?.onedrive?.isConnected
+                        ? `${formatStorageBytes(storageQuota.providers.onedrive.free)} Free`
+                        : 'Not Linked'}
+                    </p>
+                  </div>
+
+                  {/* AWS S3 */}
                   <div
                     onClick={() => setSelectedDestination('S3')}
-                    className={`glass-panel p-5 rounded-3xl border transition-all cursor-pointer ${
+                    className={`glass-panel p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden ${
                       selectedDestination === 'S3'
-                        ? 'border-amber-400 bg-amber-500/10 shadow-xl'
-                        : 'border-amber-500/20 hover:border-amber-500/50'
+                        ? 'border-amber-400 bg-amber-500/20 shadow-xl ring-2 ring-amber-400/40'
+                        : storageQuota?.providers?.s3?.isConnected
+                        ? 'border-amber-500/30 bg-amber-950/10 hover:border-amber-400'
+                        : 'border-white/5 opacity-60 hover:opacity-100'
                     }`}
                   >
-                    <span className="material-symbols-outlined text-amber-400 text-3xl mb-3">cloud</span>
-                    <h4 className="font-bold text-base text-white">AWS S3</h4>
-                    <p className="text-[11px] text-[#8b90a0] mt-0.5">Secure Storage</p>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="material-symbols-outlined text-amber-400 text-2xl">database</span>
+                      {storageQuota?.providers?.s3?.isConnected ? (
+                        <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          CONNECTED
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-white/5 text-[#8b90a0]">
+                          OFFLINE
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-bold text-sm text-white">AWS S3</h4>
+                    <p className="text-[10px] text-amber-300 font-semibold mt-1">
+                      {storageQuota?.providers?.s3?.isConnected
+                        ? `${formatStorageBytes(storageQuota.providers.s3.free)} Free`
+                        : 'Not Linked'}
+                    </p>
                   </div>
 
+                  {/* GOOGLE DRIVE */}
                   <div
-                    onClick={() => setSelectedDestination('DROPBOX')}
-                    className={`glass-panel p-5 rounded-3xl border transition-all cursor-pointer ${
-                      selectedDestination === 'DROPBOX'
-                        ? 'border-blue-400 bg-blue-500/10 shadow-xl'
-                        : 'border-blue-500/20 hover:border-blue-500/50'
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-blue-400 text-3xl mb-3">folder_shared</span>
-                    <h4 className="font-bold text-base text-white">Dropbox</h4>
-                    <p className="text-[11px] text-[#8b90a0] mt-0.5">Direct Sync</p>
-                  </div>
-
-                  <div
-                    onClick={() => setSelectedDestination('GDRIVE')}
-                    className={`glass-panel p-5 rounded-3xl border transition-all cursor-pointer ${
+                    onClick={() => {
+                      if (storageQuota?.providers?.gdrive?.isConnected) {
+                        setSelectedDestination('GDRIVE');
+                      } else {
+                        window.location.href = 'http://localhost:5000/api/storage/gdrive/login';
+                      }
+                    }}
+                    className={`glass-panel p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden ${
                       selectedDestination === 'GDRIVE'
-                        ? 'border-emerald-400 bg-emerald-500/10 shadow-xl'
-                        : 'border-emerald-500/20 hover:border-emerald-500/50'
+                        ? 'border-emerald-400 bg-emerald-500/20 shadow-xl ring-2 ring-emerald-400/40'
+                        : storageQuota?.providers?.gdrive?.isConnected
+                        ? 'border-emerald-500/30 bg-emerald-950/10 hover:border-emerald-400'
+                        : 'border-white/5 opacity-60 hover:opacity-100'
                     }`}
                   >
-                    <span className="material-symbols-outlined text-emerald-400 text-3xl mb-3">add_to_drive</span>
-                    <h4 className="font-bold text-base text-white">Google Drive</h4>
-                    <p className="text-[11px] text-[#8b90a0] mt-0.5">Personal Space</p>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="material-symbols-outlined text-emerald-400 text-2xl">add_to_drive</span>
+                      {storageQuota?.providers?.gdrive?.isConnected ? (
+                        <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          CONNECTED
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-white/5 text-[#8b90a0]">
+                          RE-LINK
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-bold text-sm text-white">Google Drive</h4>
+                    <p className="text-[10px] text-emerald-300 font-semibold mt-1">
+                      {storageQuota?.providers?.gdrive?.isConnected
+                        ? `${formatStorageBytes(storageQuota.providers.gdrive.free)} Free`
+                        : 'Click to Connect'}
+                    </p>
                   </div>
 
+                  {/* DROPBOX */}
                   <div
-                    onClick={() => setSelectedDestination('AZURE')}
-                    className={`glass-panel p-5 rounded-3xl border transition-all cursor-pointer ${
-                      selectedDestination === 'AZURE'
-                        ? 'border-cyan-400 bg-cyan-500/10 shadow-xl'
-                        : 'border-cyan-500/20 hover:border-cyan-500/50'
+                    onClick={() => {
+                      if (storageQuota?.providers?.dropbox?.isConnected) {
+                        setSelectedDestination('DROPBOX');
+                      } else {
+                        window.location.href = 'http://localhost:5000/api/storage/dropbox/login';
+                      }
+                    }}
+                    className={`glass-panel p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden ${
+                      selectedDestination === 'DROPBOX'
+                        ? 'border-blue-400 bg-blue-500/20 shadow-xl ring-2 ring-blue-400/40'
+                        : storageQuota?.providers?.dropbox?.isConnected
+                        ? 'border-blue-500/30 bg-blue-950/10 hover:border-blue-400'
+                        : 'border-white/5 opacity-60 hover:opacity-100'
                     }`}
                   >
-                    <span className="material-symbols-outlined text-cyan-400 text-3xl mb-3">cloud_queue</span>
-                    <h4 className="font-bold text-base text-white">Azure</h4>
-                    <p className="text-[11px] text-[#8b90a0] mt-0.5">Enterprise Blob</p>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="material-symbols-outlined text-blue-400 text-2xl">folder_shared</span>
+                      {storageQuota?.providers?.dropbox?.isConnected ? (
+                        <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                          CONNECTED
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-white/5 text-[#8b90a0]">
+                          RE-LINK
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-bold text-sm text-white">Dropbox</h4>
+                    <p className="text-[10px] text-blue-300 font-semibold mt-1">
+                      {storageQuota?.providers?.dropbox?.isConnected
+                        ? `${formatStorageBytes(storageQuota.providers.dropbox.free)} Free`
+                        : 'Click to Connect'}
+                    </p>
+                  </div>
+
+                  {/* MEGA */}
+                  <div
+                    onClick={() => setSelectedDestination('MEGA')}
+                    className={`glass-panel p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden ${
+                      selectedDestination === 'MEGA'
+                        ? 'border-rose-400 bg-rose-500/20 shadow-xl ring-2 ring-rose-400/40'
+                        : storageQuota?.providers?.mega?.isConnected
+                        ? 'border-rose-500/30 bg-rose-950/10 hover:border-rose-400'
+                        : 'border-white/5 opacity-60 hover:opacity-100'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="material-symbols-outlined text-rose-400 text-2xl">lock</span>
+                      {storageQuota?.providers?.mega?.isConnected ? (
+                        <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                          CONNECTED
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-white/5 text-[#8b90a0]">
+                          OFFLINE
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-bold text-sm text-white">MEGA</h4>
+                    <p className="text-[10px] text-rose-300 font-semibold mt-1">
+                      {storageQuota?.providers?.mega?.isConnected
+                        ? `${formatStorageBytes(storageQuota.providers.mega.free)} Free`
+                        : 'E2EE Mesh'}
+                    </p>
                   </div>
                 </div>
 
-                <button className="w-full glass-panel py-4 rounded-3xl border border-dashed border-white/20 hover:border-white/40 flex items-center justify-center space-x-3 text-sm font-semibold text-[#c1c6d7] hover:text-white transition-all">
-                  <span className="material-symbols-outlined text-xl">add</span>
-                  <span>Connect new cloud instance</span>
+                <button
+                  onClick={() => setActiveNav('settings')}
+                  className="w-full glass-panel py-4 rounded-3xl border border-dashed border-white/20 hover:border-white/40 flex items-center justify-center space-x-3 text-sm font-semibold text-[#c1c6d7] hover:text-white transition-all cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-xl text-primary">settings_suggest</span>
+                  <span>Manage Connected Cloud Nodes in Settings</span>
                 </button>
               </div>
 
@@ -2224,3 +2963,7 @@ export default function CloudFusionAppDashboard() {
     </div>
   );
 }
+
+
+
+
