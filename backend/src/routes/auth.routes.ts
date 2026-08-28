@@ -5,6 +5,8 @@ import {
   logoutUser,
   getMe,
   googleOAuth,
+  redirectToGoogleAuth,
+  handleGoogleAuthCallback,
 } from '../controllers/auth.controller';
 import { authenticateJWT } from '../middleware/auth.middleware';
 
@@ -14,6 +16,9 @@ router.post('/register', registerUser);
 router.post('/login', loginUser);
 router.post('/logout', logoutUser);
 router.post('/google', googleOAuth);
+router.get('/google/login', redirectToGoogleAuth);
+router.get('/google/callback', handleGoogleAuthCallback);
 router.get('/me', authenticateJWT, getMe);
 
 export default router;
+

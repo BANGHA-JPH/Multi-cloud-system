@@ -431,8 +431,25 @@ export default function CloudFusionAppDashboard() {
     setIsMounted(true);
     document.title = 'CloudFusion | Dashboard';
 
-    const token = localStorage.getItem('cloudfusion_token');
-    const storedUser = localStorage.getItem('cloudfusion_user');
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlAuthToken = urlParams.get('auth_token');
+      const urlUser = urlParams.get('user');
+
+      if (urlAuthToken) {
+        localStorage.setItem('cloudfusion_token', urlAuthToken);
+        if (urlUser) {
+          try {
+            localStorage.setItem('cloudfusion_user', decodeURIComponent(urlUser));
+          } catch (_) {
+            localStorage.setItem('cloudfusion_user', urlUser);
+          }
+        }
+      }
+    }
+
+    const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
+    const storedUser = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_user') : null;
     if (storedUser) {
       try {
         setUser(JSON.parse(storedUser));
@@ -442,6 +459,7 @@ export default function CloudFusionAppDashboard() {
     if (!token) {
       router.push('/login');
     } else {
+
       if (typeof window !== 'undefined') {
         const urlParams = new URLSearchParams(window.location.search);
         const connectedProvider = urlParams.get('connected');

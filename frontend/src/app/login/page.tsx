@@ -15,6 +15,29 @@ export default function LoginPage() {
   useEffect(() => {
     router.prefetch('/dashboard');
     router.prefetch('/register');
+
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const authToken = params.get('auth_token');
+      const userParam = params.get('user');
+      const errorParam = params.get('error');
+
+      if (errorParam) {
+        setErrorMsg(decodeURIComponent(errorParam));
+      }
+
+      if (authToken) {
+        localStorage.setItem('cloudfusion_token', authToken);
+        if (userParam) {
+          try {
+            localStorage.setItem('cloudfusion_user', decodeURIComponent(userParam));
+          } catch (_) {
+            localStorage.setItem('cloudfusion_user', userParam);
+          }
+        }
+        router.push('/dashboard');
+      }
+    }
   }, [router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -50,9 +73,10 @@ export default function LoginPage() {
   };
 
   const handleGoogleSignIn = () => {
-    // Simulated Google OAuth SSO redirect / credential trigger
-    alert('Google OAuth SSO triggered. Connecting to Google Auth Identity Services...');
+    setIsLoading(true);
+    window.location.href = 'http://localhost:5000/api/auth/google/login';
   };
+
 
   return (
     <div className="min-h-screen bg-[#060913] text-slate-100 flex flex-col justify-center items-center relative overflow-hidden px-4 font-sans">
