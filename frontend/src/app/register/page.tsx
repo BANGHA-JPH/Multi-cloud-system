@@ -76,11 +76,12 @@ export default function RegisterPage() {
       }
 
       if (data.token) {
+        localStorage.removeItem('cloudfusion_quota_cache');
         localStorage.setItem('cloudfusion_token', data.token);
         localStorage.setItem('cloudfusion_user', JSON.stringify(data.user));
       }
 
-      router.push('/dashboard');
+      window.location.href = '/dashboard';
     } catch (err: any) {
       setErrorMsg(err.message || 'Unable to register account. Please try again.');
     } finally {

@@ -35,7 +35,37 @@ function parseCredentials(credStr?: string): Record<string, any> {
   }
 }
 
-export async function getAggregatedStorageQuota(userId?: string): Promise<AggregateStorageQuota> {
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
+interface CachedQuota {
+  data: AggregateStorageQuota;
+  timestamp: number;
+}
+const quotaCache = new Map<string, CachedQuota>();
+const CACHE_TTL_MS = 60 * 1000; // 60 seconds TTL
+
+export function invalidateQuotaCache(userId?: string) {
+  if (userId) {
+    quotaCache.delete(userId);
+  } else {
+    quotaCache.clear();
+  }
+}
+
+export async function getAggregatedStorageQuota(userId?: string, forceLive: boolean = false): Promise<AggregateStorageQuota> {
+  const cacheKey = userId || 'global';
+  if (!forceLive) {
+    const cached = quotaCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return cached.data;
+    }
+  }
+
   const connectedMap: Record<string, boolean> = {
     MEGA: false,
     GOOGLE_DRIVE: false,
@@ -52,20 +82,135 @@ export async function getAggregatedStorageQuota(userId?: string): Promise<Aggreg
     DROPBOX: null,
   };
 
-  // If userId provided, look up accounts exclusively for this user
+  let userFiles: Array<{ cloudProvider: string; sizeBytes: bigint }> = [];
+  let userAccounts: any[] = [];
+
+  // If userId provided, look up accounts and active files upfront
   if (userId) {
     try {
-      const userAccounts = await prisma.cloudAccount.findMany({
-        where: { userId },
-      });
+      const [accounts, files] = await Promise.all([
+        prisma.cloudAccount.findMany({
+          where: { userId },
+        }),
+        prisma.fileMetadata.findMany({
+          where: { userId, status: 'ACTIVE' },
+          select: { cloudProvider: true, sizeBytes: true },
+        }),
+      ]);
 
-      userAccounts.forEach((acc) => {
+      userAccounts = accounts;
+      userFiles = files;
+
+      accounts.forEach((acc) => {
         const prov = acc.provider.toUpperCase();
         connectedMap[prov] = true;
         credentialsMap[prov] = parseCredentials(acc.credentialsEncrypted);
       });
+
+      // If user has no linked accounts, return clean zero quota immediately
+      if (accounts.length === 0) {
+        const emptyResult: AggregateStorageQuota = {
+          totalQuotaBytes: '0',
+          usedQuotaBytes: '0',
+          freeQuotaBytes: '0',
+          providers: {
+            onedrive: { total: '0', used: '0', free: '0', isConnected: false },
+            gdrive: { total: '0', used: '0', free: '0', isConnected: false },
+            dropbox: { total: '0', used: '0', free: '0', isConnected: false },
+            s3: { total: '0', used: '0', free: '0', isConnected: false },
+            mega: { total: '0', used: '0', free: '0', isConnected: false },
+          },
+        };
+        quotaCache.set(cacheKey, { data: emptyResult, timestamp: Date.now() });
+        return emptyResult;
+      }
+
+      // If not forced live and accounts exist, serve fast response from DB in ~15ms
+      if (!forceLive && accounts.length > 0) {
+        let odTotal = BigInt(0), odUsed = BigInt(0);
+        let gdTotal = BigInt(0), gdUsed = BigInt(0);
+        let dbTotal = BigInt(0), dbUsed = BigInt(0);
+        let s3Total = BigInt(0), s3Used = BigInt(0);
+        let mgTotal = BigInt(0), mgUsed = BigInt(0);
+
+        accounts.forEach((acc) => {
+          const prov = acc.provider.toUpperCase();
+          if (prov === 'ONEDRIVE') {
+            odTotal = acc.totalStorageBytes || BigInt(5368709120);
+            odUsed = acc.usedStorageBytes || BigInt(0);
+          } else if (prov === 'GOOGLE_DRIVE') {
+            const rawTotal = acc.totalStorageBytes || BigInt(16106127360);
+            gdTotal = rawTotal < BigInt(16106127360) ? BigInt(16106127360) : rawTotal;
+            gdUsed = acc.usedStorageBytes || BigInt(0);
+          } else if (prov === 'DROPBOX') {
+            dbTotal = acc.totalStorageBytes || BigInt(2147483648);
+            dbUsed = acc.usedStorageBytes || BigInt(0);
+          } else if (prov === 'AWS_S3' || prov === 'S3') {
+            s3Total = acc.totalStorageBytes || BigInt(5368709120);
+            s3Used = acc.usedStorageBytes || BigInt(0);
+          } else if (prov === 'MEGA') {
+            mgTotal = acc.totalStorageBytes || BigInt(21474836480);
+            mgUsed = acc.usedStorageBytes || BigInt(0);
+          }
+        });
+
+        // Add file size tallies
+        files.forEach((f) => {
+          const prov = f.cloudProvider.toUpperCase();
+          if (prov === 'ONEDRIVE') odUsed += f.sizeBytes;
+          else if (prov === 'GOOGLE_DRIVE') gdUsed += f.sizeBytes;
+          else if (prov === 'DROPBOX') dbUsed += f.sizeBytes;
+          else if (prov === 'AWS_S3' || prov === 'S3') s3Used += f.sizeBytes;
+          else if (prov === 'MEGA') mgUsed += f.sizeBytes;
+        });
+
+        const totalQuota = odTotal + gdTotal + dbTotal + s3Total + mgTotal;
+        const usedQuota = odUsed + gdUsed + dbUsed + s3Used + mgUsed;
+        const freeQuota = totalQuota - usedQuota > BigInt(0) ? totalQuota - usedQuota : BigInt(0);
+
+        const fastResult: AggregateStorageQuota = {
+          totalQuotaBytes: totalQuota.toString(),
+          usedQuotaBytes: usedQuota.toString(),
+          freeQuotaBytes: freeQuota.toString(),
+          providers: {
+            onedrive: {
+              total: odTotal.toString(),
+              used: odUsed.toString(),
+              free: (odTotal - odUsed > BigInt(0) ? odTotal - odUsed : BigInt(0)).toString(),
+              isConnected: connectedMap.ONEDRIVE,
+            },
+            gdrive: {
+              total: gdTotal.toString(),
+              used: gdUsed.toString(),
+              free: (gdTotal - gdUsed > BigInt(0) ? gdTotal - gdUsed : BigInt(0)).toString(),
+              isConnected: connectedMap.GOOGLE_DRIVE,
+            },
+            dropbox: {
+              total: dbTotal.toString(),
+              used: dbUsed.toString(),
+              free: (dbTotal - dbUsed > BigInt(0) ? dbTotal - dbUsed : BigInt(0)).toString(),
+              isConnected: connectedMap.DROPBOX,
+            },
+            s3: {
+              total: s3Total.toString(),
+              used: s3Used.toString(),
+              free: (s3Total - s3Used > BigInt(0) ? s3Total - s3Used : BigInt(0)).toString(),
+              isConnected: connectedMap.AWS_S3,
+            },
+            mega: {
+              total: mgTotal.toString(),
+              used: mgUsed.toString(),
+              free: (mgTotal - mgUsed > BigInt(0) ? mgTotal - mgUsed : BigInt(0)).toString(),
+              isConnected: connectedMap.MEGA,
+            },
+          },
+        };
+
+        quotaCache.set(cacheKey, { data: fastResult, timestamp: Date.now() });
+        return fastResult;
+      }
     } catch (e) {
-      console.warn('Accounts query notice:', e);
+      console.warn('Database query notice in cloud balancer:', e);
     }
   } else {
     // Global fallback for scripts/tests
@@ -95,89 +240,74 @@ export async function getAggregatedStorageQuota(userId?: string): Promise<Aggreg
     }
   }
 
-  // 1. Microsoft OneDrive
-  let onedriveTotal = BigInt(0);
-  let onedriveUsed = BigInt(0);
-  if (connectedMap.ONEDRIVE) {
-    try {
-      const liveOneDrive = await getOneDriveStorageUsage(credentialsMap.ONEDRIVE || undefined);
-      onedriveTotal = liveOneDrive.totalBytes;
-      onedriveUsed = liveOneDrive.usedBytes;
-    } catch {
-      onedriveTotal = BigInt(5368709120);
-    }
-  }
+  // Fetch live storage metrics concurrently with timeouts
+  const [onedriveRes, gdriveRes, dropboxRes, s3Res, megaRes] = await Promise.allSettled([
+    connectedMap.ONEDRIVE
+      ? withTimeout(
+          getOneDriveStorageUsage(credentialsMap.ONEDRIVE || undefined),
+          6000,
+          { provider: 'ONEDRIVE', totalBytes: BigInt(5368709120), usedBytes: BigInt(0), freeBytes: BigInt(5368709120), isConnected: true }
+        )
+      : Promise.resolve({ provider: 'ONEDRIVE' as const, totalBytes: BigInt(0), usedBytes: BigInt(0), freeBytes: BigInt(0), isConnected: false }),
 
-  // 2. Google Drive
-  let gdriveTotal = BigInt(0);
-  let gdriveUsed = BigInt(0);
-  if (connectedMap.GOOGLE_DRIVE) {
-    try {
-      const liveGDrive = await getGDriveStorageUsage(credentialsMap.GOOGLE_DRIVE || undefined);
-      gdriveTotal = liveGDrive.totalBytes;
-      gdriveUsed = liveGDrive.usedBytes;
-    } catch {
-      gdriveTotal = BigInt(16106127360);
-    }
-  }
+    connectedMap.GOOGLE_DRIVE
+      ? withTimeout(
+          getGDriveStorageUsage(credentialsMap.GOOGLE_DRIVE || undefined),
+          6000,
+          { provider: 'GOOGLE_DRIVE', totalBytes: BigInt(16106127360), usedBytes: BigInt(0), freeBytes: BigInt(16106127360), isConnected: true }
+        )
+      : Promise.resolve({ provider: 'GOOGLE_DRIVE' as const, totalBytes: BigInt(0), usedBytes: BigInt(0), freeBytes: BigInt(0), isConnected: false }),
 
-  // 3. Dropbox
-  let dropboxTotal = BigInt(0);
-  let dropboxUsed = BigInt(0);
-  if (connectedMap.DROPBOX) {
-    try {
-      const liveDropbox = await getDropboxStorageUsage(credentialsMap.DROPBOX || undefined);
-      dropboxTotal = liveDropbox.totalBytes;
-      dropboxUsed = liveDropbox.usedBytes;
-    } catch {
-      dropboxTotal = BigInt(2147483648);
-    }
-  }
+    connectedMap.DROPBOX
+      ? withTimeout(
+          getDropboxStorageUsage(credentialsMap.DROPBOX || undefined),
+          6000,
+          { provider: 'DROPBOX', totalBytes: BigInt(2147483648), usedBytes: BigInt(0), freeBytes: BigInt(2147483648), isConnected: true }
+        )
+      : Promise.resolve({ provider: 'DROPBOX' as const, totalBytes: BigInt(0), usedBytes: BigInt(0), freeBytes: BigInt(0), isConnected: false }),
 
-  // 4. AWS S3
-  let s3Total = BigInt(0);
-  let s3Used = BigInt(0);
-  if (connectedMap.AWS_S3) {
-    try {
-      const liveS3 = await getS3StorageUsage(credentialsMap.AWS_S3 || undefined);
-      s3Total = liveS3.totalBytes;
-      s3Used = liveS3.usedBytes;
-    } catch {
-      s3Total = BigInt(5368709120);
-    }
-  }
+    connectedMap.AWS_S3
+      ? withTimeout(
+          getS3StorageUsage(credentialsMap.AWS_S3 || undefined),
+          6000,
+          { provider: 'AWS_S3', totalBytes: BigInt(5368709120), usedBytes: BigInt(0), freeBytes: BigInt(5368709120), isConnected: true }
+        )
+      : Promise.resolve({ provider: 'AWS_S3' as const, totalBytes: BigInt(0), usedBytes: BigInt(0), freeBytes: BigInt(0), isConnected: false }),
 
-  // 5. MEGA Cloud
-  let megaTotal = BigInt(0);
-  let megaUsed = BigInt(0);
-  if (connectedMap.MEGA) {
-    try {
-      const liveMega = await getMegaStorageUsage(credentialsMap.MEGA || undefined);
-      megaTotal = liveMega.totalBytes;
-      megaUsed = liveMega.usedBytes;
-    } catch {
-      megaTotal = BigInt(21474836480);
-    }
-  }
+    connectedMap.MEGA
+      ? withTimeout(
+          getMegaStorageUsage(credentialsMap.MEGA || undefined),
+          6000,
+          { provider: 'MEGA', totalBytes: BigInt(21474836480), usedBytes: BigInt(0), freeBytes: BigInt(21474836480), isConnected: true }
+        )
+      : Promise.resolve({ provider: 'MEGA' as const, totalBytes: BigInt(0), usedBytes: BigInt(0), freeBytes: BigInt(0), isConnected: false }),
+  ]);
+
+  let onedriveTotal = onedriveRes.status === 'fulfilled' ? onedriveRes.value.totalBytes : (connectedMap.ONEDRIVE ? BigInt(5368709120) : BigInt(0));
+  let onedriveUsed = onedriveRes.status === 'fulfilled' ? onedriveRes.value.usedBytes : BigInt(0);
+
+  let gdriveTotal = gdriveRes.status === 'fulfilled' ? gdriveRes.value.totalBytes : (connectedMap.GOOGLE_DRIVE ? BigInt(16106127360) : BigInt(0));
+  let gdriveUsed = gdriveRes.status === 'fulfilled' ? gdriveRes.value.usedBytes : BigInt(0);
+
+  let dropboxTotal = dropboxRes.status === 'fulfilled' ? dropboxRes.value.totalBytes : (connectedMap.DROPBOX ? BigInt(2147483648) : BigInt(0));
+  let dropboxUsed = dropboxRes.status === 'fulfilled' ? dropboxRes.value.usedBytes : BigInt(0);
+
+  let s3Total = s3Res.status === 'fulfilled' ? s3Res.value.totalBytes : (connectedMap.AWS_S3 ? BigInt(5368709120) : BigInt(0));
+  let s3Used = s3Res.status === 'fulfilled' ? s3Res.value.usedBytes : BigInt(0);
+
+  let megaTotal = megaRes.status === 'fulfilled' ? megaRes.value.totalBytes : (connectedMap.MEGA ? BigInt(21474836480) : BigInt(0));
+  let megaUsed = megaRes.status === 'fulfilled' ? megaRes.value.usedBytes : BigInt(0);
 
   // Factor in active database records for this user
-  if (userId) {
-    try {
-      const files = await prisma.fileMetadata.findMany({
-        where: { userId, status: 'ACTIVE' },
-        select: { cloudProvider: true, sizeBytes: true },
-      });
-      files.forEach((f) => {
-        const prov = f.cloudProvider.toUpperCase();
-        if (prov === 'ONEDRIVE') onedriveUsed += f.sizeBytes;
-        else if (prov === 'GOOGLE_DRIVE') gdriveUsed += f.sizeBytes;
-        else if (prov === 'DROPBOX') dropboxUsed += f.sizeBytes;
-        else if (prov === 'AWS_S3' || prov === 'S3') s3Used += f.sizeBytes;
-        else if (prov === 'MEGA') megaUsed += f.sizeBytes;
-      });
-    } catch (e) {
-      console.warn('Files usage notice:', e);
-    }
+  if (userFiles.length > 0) {
+    userFiles.forEach((f) => {
+      const prov = f.cloudProvider.toUpperCase();
+      if (prov === 'ONEDRIVE') onedriveUsed += f.sizeBytes;
+      else if (prov === 'GOOGLE_DRIVE') gdriveUsed += f.sizeBytes;
+      else if (prov === 'DROPBOX') dropboxUsed += f.sizeBytes;
+      else if (prov === 'AWS_S3' || prov === 'S3') s3Used += f.sizeBytes;
+      else if (prov === 'MEGA') megaUsed += f.sizeBytes;
+    });
   }
 
   const totalQuota = onedriveTotal + gdriveTotal + dropboxTotal + s3Total + megaTotal;
@@ -259,5 +389,30 @@ export class CloudBalancerService {
     if (candidates.length === 0) return CloudProviderEnum.ONEDRIVE;
     candidates.sort((a, b) => (b.freeBytes > a.freeBytes ? 1 : b.freeBytes < a.freeBytes ? -1 : 0));
     return candidates[0].provider;
+  }
+
+  static selectTopTwoProviders(
+    quota: AggregateStorageQuota
+  ): [CloudProviderEnum, CloudProviderEnum | null] {
+    const candidates: Array<{ provider: CloudProviderEnum; freeBytes: bigint }> = [];
+    if (quota.providers?.onedrive?.isConnected) {
+      candidates.push({ provider: CloudProviderEnum.ONEDRIVE, freeBytes: BigInt(quota.providers.onedrive.free || 0) });
+    }
+    if (quota.providers?.gdrive?.isConnected) {
+      candidates.push({ provider: CloudProviderEnum.GOOGLE_DRIVE, freeBytes: BigInt(quota.providers.gdrive.free || 0) });
+    }
+    if (quota.providers?.dropbox?.isConnected) {
+      candidates.push({ provider: CloudProviderEnum.DROPBOX, freeBytes: BigInt(quota.providers.dropbox.free || 0) });
+    }
+    if (quota.providers?.s3?.isConnected) {
+      candidates.push({ provider: CloudProviderEnum.AWS_S3, freeBytes: BigInt(quota.providers.s3.free || 0) });
+    }
+    if (quota.providers?.mega?.isConnected) {
+      candidates.push({ provider: CloudProviderEnum.MEGA, freeBytes: BigInt(quota.providers.mega.free || 0) });
+    }
+
+    if (candidates.length === 0) return [CloudProviderEnum.ONEDRIVE, null];
+    candidates.sort((a, b) => (b.freeBytes > a.freeBytes ? 1 : b.freeBytes < a.freeBytes ? -1 : 0));
+    return [candidates[0].provider, candidates[1]?.provider || null];
   }
 }

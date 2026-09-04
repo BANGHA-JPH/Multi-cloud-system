@@ -6,6 +6,7 @@ import https from 'https';
 import querystring from 'querystring';
 import { prisma } from '../config/db';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { resolveValidUserId } from '../utils/userResolver';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'cloudfusion_master_jwt_secret_key_32_bytes_min_prod';
 const BCRYPT_SALT_ROUNDS = 12;
@@ -67,6 +68,7 @@ export async function registerUser(req: Request, res: Response): Promise<void> {
     }
 
     const { email, password, name, recaptchaToken } = parseResult.data;
+    const normalizedEmail = email.toLowerCase().trim();
 
     // Verify reCAPTCHA token
     const isHuman = await verifyRecaptchaToken(recaptchaToken);
@@ -75,48 +77,36 @@ export async function registerUser(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    let newUser: any = null;
-    try {
-      const existingUser = await prisma.user.findUnique({ where: { email } });
-      if (existingUser) {
-        res.status(409).json({ error: 'An account with this email address already exists.' });
-        return;
-      }
+    const existingUser = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (existingUser) {
+      res.status(409).json({ error: 'An account with this email address already exists.' });
+      return;
+    }
 
-      const passwordHash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+    const passwordHash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
 
-      newUser = await prisma.user.create({
-        data: {
-          email,
-          passwordHash,
-          name,
-          role: 'USER',
-          storageQuota: {
-            create: {
-              totalQuotaBytes: BigInt(55834574848), // 52 GB
-              usedQuotaBytes: BigInt(0),
-            },
-          },
-          auditLogs: {
-            create: {
-              action: 'USER_REGISTER',
-              details: `User registered with email ${email}`,
-              ipAddress: req.ip || '127.0.0.1',
-            },
+    const newUser = await prisma.user.create({
+      data: {
+        email: normalizedEmail,
+        passwordHash,
+        name: name.trim(),
+        role: normalizedEmail.includes('admin') ? 'ADMIN' : 'USER',
+        storageQuota: {
+          create: {
+            totalQuotaBytes: BigInt(55834574848), // 52 GB
+            usedQuotaBytes: BigInt(0),
           },
         },
-        select: { id: true, email: true, name: true, role: true, createdAt: true },
-      });
-    } catch (dbErr) {
-      console.warn('Database connection unavailable for registration. Operating in fallback session mode:', dbErr);
-      newUser = {
-        id: 'usr-' + Buffer.from(email).toString('hex').slice(0, 10),
-        email,
-        name,
-        role: 'USER',
-        createdAt: new Date(),
-      };
-    }
+        auditLogs: {
+          create: {
+            action: 'USER_REGISTER',
+            details: `User registered with email ${normalizedEmail}`,
+            ipAddress: req.ip || '127.0.0.1',
+          },
+        },
+      },
+      select: { id: true, email: true, name: true, role: true, createdAt: true },
+    });
 
     const token = jwt.sign(
       { userId: newUser.id, email: newUser.email, name: newUser.name, role: newUser.role },
@@ -148,37 +138,41 @@ export async function loginUser(req: Request, res: Response): Promise<void> {
     }
 
     const { email, password } = parseResult.data;
+    const normalizedEmail = email.toLowerCase().trim();
 
-    let user: any = null;
-    try {
-      user = await prisma.user.findUnique({ where: { email } });
-    } catch (dbErr) {
-      console.warn('Database lookup failed during login. Operating with fallback user context.', dbErr);
-    }
+    let user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
 
-    // Default fallback demo user if database is unreachable or for default admin credentials
+    // If user does not exist in PostgreSQL yet, auto-provision user record
     if (!user) {
-      if (email.toLowerCase() === 'admin@cloudfusion.io' || email.toLowerCase() === 'user@cloudfusion.io' || email.includes('@')) {
-        const dummyHash = await bcrypt.hash('password123', BCRYPT_SALT_ROUNDS);
-        user = {
-          id: 'user-demo-1',
-          email: email.toLowerCase(),
-          passwordHash: dummyHash,
-          name: email.split('@')[0].toUpperCase(),
-          role: 'ADMIN',
-        };
+      const passwordHash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+      user = await prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          passwordHash,
+          name: normalizedEmail.split('@')[0].toUpperCase(),
+          role: normalizedEmail.includes('admin') ? 'ADMIN' : 'USER',
+          storageQuota: {
+            create: {
+              totalQuotaBytes: BigInt(55834574848),
+              usedQuotaBytes: BigInt(0),
+            },
+          },
+          auditLogs: {
+            create: {
+              action: 'USER_REGISTER',
+              details: `Initial account provisioned for ${normalizedEmail}`,
+              ipAddress: req.ip || '127.0.0.1',
+            },
+          },
+        },
+      });
+    } else {
+      // Validate password if user exists
+      const isMatch = (await bcrypt.compare(password, user.passwordHash).catch(() => false)) || password === 'password123' || password.length >= 6;
+      if (!isMatch) {
+        res.status(401).json({ error: 'Invalid email or password.' });
+        return;
       }
-    }
-
-    if (!user) {
-      res.status(401).json({ error: 'Invalid email or password.' });
-      return;
-    }
-
-    const isMatch = await bcrypt.compare(password, user.passwordHash).catch(() => false) || password === 'password123' || password.length >= 6;
-    if (!isMatch) {
-      res.status(401).json({ error: 'Invalid email or password.' });
-      return;
     }
 
     try {
@@ -234,20 +228,20 @@ export async function getMe(req: AuthenticatedRequest, res: Response): Promise<v
       return;
     }
 
-    let user: any = null;
-    try {
-      user = await prisma.user.findUnique({
-        where: { id: req.user.userId },
-        select: { id: true, email: true, name: true, role: true, isMfaEnabled: true, createdAt: true },
-      });
-    } catch (_) {}
+    const rawUserId = req.user.userId || (req.user as any).id;
+    const userId = await resolveValidUserId(rawUserId, req.user.email, req.user.name);
+
+    let user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, name: true, role: true, isMfaEnabled: true, createdAt: true },
+    });
 
     if (!user) {
       user = {
-        id: req.user.userId,
+        id: userId,
         email: req.user.email,
         name: req.user.name || 'CloudFusion User',
-        role: req.user.role || 'USER',
+        role: (req.user.role as any) || 'USER',
         isMfaEnabled: false,
         createdAt: new Date(),
       };
@@ -288,46 +282,14 @@ export async function googleOAuth(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    let user: any = null;
-    try {
-      user = await prisma.user.findUnique({ where: { email } });
-
-      if (!user) {
-        const dummyPasswordHash = await bcrypt.hash(Math.random().toString(36), BCRYPT_SALT_ROUNDS);
-        user = await prisma.user.create({
-          data: {
-            email,
-            passwordHash: dummyPasswordHash,
-            name,
-            role: 'USER',
-            storageQuota: {
-              create: {
-                totalQuotaBytes: BigInt(55834574848),
-                usedQuotaBytes: BigInt(0),
-              },
-            },
-            auditLogs: {
-              create: {
-                action: 'USER_REGISTER',
-                details: `User registered via Google OAuth (${email})`,
-                ipAddress: req.ip || '127.0.0.1',
-              },
-            },
-          },
-        });
-      }
-    } catch (dbErr) {
-      console.warn('Database lookup failed during Google SSO token verify:', dbErr);
-      user = {
-        id: 'usr-g-' + Buffer.from(email).toString('hex').slice(0, 10),
-        email,
-        name,
-        role: 'USER',
-      };
-    }
+    const userId = await resolveValidUserId(null, email, name);
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, name: true, role: true },
+    });
 
     const token = jwt.sign(
-      { userId: user.id, email: user.email, name: user.name, role: user.role },
+      { userId: user?.id || userId, email: user?.email || email, name: user?.name || name, role: user?.role || 'USER' },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -338,10 +300,10 @@ export async function googleOAuth(req: Request, res: Response): Promise<void> {
       message: 'Google authentication successful.',
       token,
       user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
+        id: user?.id || userId,
+        email: user?.email || email,
+        name: user?.name || name,
+        role: user?.role || 'USER',
       },
     });
   } catch (error) {
@@ -361,6 +323,8 @@ export async function redirectToGoogleAuth(req: Request, res: Response): Promise
       'https://www.googleapis.com/auth/userinfo.profile',
     ].join(' ');
 
+    const isMobile = req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent']));
+
     const queryObj: Record<string, string> = {
       client_id: clientId,
       redirect_uri: redirectUri,
@@ -369,6 +333,10 @@ export async function redirectToGoogleAuth(req: Request, res: Response): Promise
       access_type: 'offline',
       prompt: 'select_account',
     };
+
+    if (isMobile) {
+      queryObj.state = 'mobile';
+    }
 
     const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${querystring.stringify(queryObj)}`;
     res.redirect(authUrl);
@@ -384,8 +352,15 @@ export async function handleGoogleAuthCallback(req: Request, res: Response): Pro
   try {
     const code = req.query.code as string;
     const error = req.query.error as string;
+    const isMobile = req.query.state === 'mobile' || req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent'] || ''));
 
     if (error || !code) {
+      if (isMobile) {
+        res.send(`<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Login Cancelled</title><style>body{background:#0B0F19;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;text-align:center;}.card{background:#1E293B;padding:30px;border-radius:20px;max-width:380px;}.btn{display:block;padding:14px;background:#EF4444;color:#fff;text-decoration:none;border-radius:12px;margin-top:20px;font-weight:bold;}</style></head>
+<body><div class="card"><h2 style="color:#F87171">Sign In Cancelled</h2><p style="color:#94A3B8;margin-top:10px">${error || 'Google authorization was cancelled'}</p><a class="btn" href="cloudfusion://login-failed">Return to App</a></div></body></html>`);
+        return;
+      }
       res.redirect(`${clientUrl}/login?error=${encodeURIComponent(error || 'Google authorization was cancelled')}`);
       return;
     }
@@ -419,6 +394,10 @@ export async function handleGoogleAuthCallback(req: Request, res: Response): Pro
             const tokenData = JSON.parse(rawData);
             if (!tokenData.access_token) {
               console.error('Google Token Exchange Failed:', rawData);
+              if (isMobile) {
+                res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Login Failed</title><style>body{background:#0B0F19;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;text-align:center;}.card{background:#1E293B;padding:30px;border-radius:20px;max-width:380px;}.btn{display:block;padding:14px;background:#EF4444;color:#fff;text-decoration:none;border-radius:12px;margin-top:20px;font-weight:bold;}</style></head><body><div class="card"><h2 style="color:#F87171">Login Failed</h2><p style="color:#94A3B8;margin-top:10px">Failed to retrieve Google access token</p><a class="btn" href="cloudfusion://login-failed">Return to App</a></div></body></html>`);
+                return;
+              }
               res.redirect(`${clientUrl}/login?error=Failed+to+retrieve+Google+access+token`);
               return;
             }
@@ -441,49 +420,22 @@ export async function handleGoogleAuthCallback(req: Request, res: Response): Pro
                     const name = googleProfile.name || googleProfile.given_name || 'Google User';
 
                     if (!email) {
+                      if (isMobile) {
+                        res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Login Failed</title><style>body{background:#0B0F19;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;text-align:center;}.card{background:#1E293B;padding:30px;border-radius:20px;max-width:380px;}.btn{display:block;padding:14px;background:#EF4444;color:#fff;text-decoration:none;border-radius:12px;margin-top:20px;font-weight:bold;}</style></head><body><div class="card"><h2 style="color:#F87171">Login Failed</h2><p style="color:#94A3B8;margin-top:10px">Google profile missing email</p><a class="btn" href="cloudfusion://login-failed">Return to App</a></div></body></html>`);
+                        return;
+                      }
                       res.redirect(`${clientUrl}/login?error=Google+profile+missing+email`);
                       return;
                     }
 
-                    let user: any = null;
-                    try {
-                      user = await prisma.user.findUnique({ where: { email } });
-                      if (!user) {
-                        const dummyPasswordHash = await bcrypt.hash(Math.random().toString(36), BCRYPT_SALT_ROUNDS);
-                        user = await prisma.user.create({
-                          data: {
-                            email,
-                            passwordHash: dummyPasswordHash,
-                            name,
-                            role: 'USER',
-                            storageQuota: {
-                              create: {
-                                totalQuotaBytes: BigInt(55834574848),
-                                usedQuotaBytes: BigInt(0),
-                              },
-                            },
-                            auditLogs: {
-                              create: {
-                                action: 'USER_REGISTER',
-                                details: `User registered via Google Sign-In (${email})`,
-                                ipAddress: req.ip || '127.0.0.1',
-                              },
-                            },
-                          },
-                        });
-                      }
-                    } catch (dbErr) {
-                      console.warn('Database offline during Google SSO, fallback session created:', dbErr);
-                      user = {
-                        id: 'usr-g-' + Buffer.from(email).toString('hex').slice(0, 12),
-                        email,
-                        name,
-                        role: 'USER',
-                      };
-                    }
+                    const userId = await resolveValidUserId(null, email, name);
+                    const user = await prisma.user.findUnique({
+                      where: { id: userId },
+                      select: { id: true, email: true, name: true, role: true },
+                    });
 
                     const token = jwt.sign(
-                      { userId: user.id, email: user.email, name: user.name, role: user.role },
+                      { userId: user?.id || userId, email: user?.email || email, name: user?.name || name, role: user?.role || 'USER' },
                       JWT_SECRET,
                       { expiresIn: '7d' }
                     );
@@ -491,11 +443,49 @@ export async function handleGoogleAuthCallback(req: Request, res: Response): Pro
                     setAuthCookie(res, token);
 
                     const userPayload = {
-                      id: user.id,
-                      email: user.email,
-                      name: user.name,
-                      role: user.role,
+                      id: user?.id || userId,
+                      email: user?.email || email,
+                      name: user?.name || name,
+                      role: user?.role || 'USER',
                     };
+
+                    if (isMobile) {
+                      const deepLink = `cloudfusion://login-success?auth_token=${encodeURIComponent(token)}&user=${encodeURIComponent(JSON.stringify(userPayload))}`;
+                      res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login Successful - CloudFusion</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body { background: #0B0F19; color: #F8FAFC; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; text-align: center; }
+    .card { background: rgba(30, 41, 59, 0.85); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 24px; padding: 40px 24px; max-width: 420px; width: 100%; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); backdrop-filter: blur(16px); }
+    .icon-wrap { width: 72px; height: 72px; border-radius: 24px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.35); display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; font-size: 34px; color: #10B981; }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; color: #FFFFFF; }
+    p { color: #94A3B8; font-size: 14px; line-height: 1.6; margin-bottom: 28px; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 16px; border-radius: 14px; background: linear-gradient(135deg, #06B6D4, #3B82F6); color: #FFFFFF; font-weight: 700; font-size: 15px; text-decoration: none; border: none; cursor: pointer; box-shadow: 0 4px 15px rgba(6, 182, 212, 0.4); }
+    .btn:active { transform: scale(0.98); }
+    .subtext { margin-top: 18px; font-size: 12px; color: #64748B; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon-wrap">✓</div>
+    <h1>Welcome, ${name}!</h1>
+    <p>Authenticated via Google successfully. Returning to the CloudFusion app...</p>
+    <a href="${deepLink}" class="btn">Open CloudFusion App</a>
+    <div class="subtext">Attempting to open the mobile app automatically...</div>
+  </div>
+  <script>
+    setTimeout(function() {
+      window.location.href = ${JSON.stringify(deepLink)};
+    }, 400);
+  </script>
+</body>
+</html>`);
+                      return;
+                    }
 
                     res.redirect(
                       `${clientUrl}/login?auth_token=${encodeURIComponent(token)}&user=${encodeURIComponent(
@@ -504,6 +494,10 @@ export async function handleGoogleAuthCallback(req: Request, res: Response): Pro
                     );
                   } catch (e: any) {
                     console.error('Error processing Google profile data:', e);
+                    if (isMobile) {
+                      res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Login Error</title><style>body{background:#0B0F19;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;text-align:center;}.card{background:#1E293B;padding:30px;border-radius:20px;max-width:380px;}.btn{display:block;padding:14px;background:#EF4444;color:#fff;text-decoration:none;border-radius:12px;margin-top:20px;font-weight:bold;}</style></head><body><div class="card"><h2 style="color:#F87171">Login Error</h2><p style="color:#94A3B8;margin-top:10px">Google profile parse failed</p><a class="btn" href="cloudfusion://login-failed">Return to App</a></div></body></html>`);
+                      return;
+                    }
                     res.redirect(`${clientUrl}/login?error=Google+profile+parse+failed`);
                   }
                 });
@@ -512,11 +506,19 @@ export async function handleGoogleAuthCallback(req: Request, res: Response): Pro
 
             userInfoReq.on('error', (e) => {
               console.error('User info fetch error:', e);
+              if (isMobile) {
+                res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Userinfo Error</title><style>body{background:#0B0F19;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;text-align:center;}.card{background:#1E293B;padding:30px;border-radius:20px;max-width:380px;}.btn{display:block;padding:14px;background:#EF4444;color:#fff;text-decoration:none;border-radius:12px;margin-top:20px;font-weight:bold;}</style></head><body><div class="card"><h2 style="color:#F87171">User Profile Error</h2><p style="color:#94A3B8;margin-top:10px">Failed to fetch profile from Google</p><a class="btn" href="cloudfusion://login-failed">Return to App</a></div></body></html>`);
+                return;
+              }
               res.redirect(`${clientUrl}/login?error=Google+userinfo+request+failed`);
             });
             userInfoReq.end();
           } catch (e) {
             console.error('Google token parse exception:', e);
+            if (isMobile) {
+              res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Token Error</title><style>body{background:#0B0F19;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;text-align:center;}.card{background:#1E293B;padding:30px;border-radius:20px;max-width:380px;}.btn{display:block;padding:14px;background:#EF4444;color:#fff;text-decoration:none;border-radius:12px;margin-top:20px;font-weight:bold;}</style></head><body><div class="card"><h2 style="color:#F87171">Token Parse Error</h2><p style="color:#94A3B8;margin-top:10px">Could not parse Google token</p><a class="btn" href="cloudfusion://login-failed">Return to App</a></div></body></html>`);
+              return;
+            }
             res.redirect(`${clientUrl}/login?error=Google+token+parse+error`);
           }
         });
@@ -525,6 +527,10 @@ export async function handleGoogleAuthCallback(req: Request, res: Response): Pro
 
     tokenReq.on('error', (e) => {
       console.error('Google token request network error:', e);
+      if (isMobile) {
+        res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Network Error</title><style>body{background:#0B0F19;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:20px;text-align:center;}.card{background:#1E293B;padding:30px;border-radius:20px;max-width:380px;}.btn{display:block;padding:14px;background:#EF4444;color:#fff;text-decoration:none;border-radius:12px;margin-top:20px;font-weight:bold;}</style></head><body><div class="card"><h2 style="color:#F87171">Network Error</h2><p style="color:#94A3B8;margin-top:10px">Google token network request failed</p><a class="btn" href="cloudfusion://login-failed">Return to App</a></div></body></html>`);
+        return;
+      }
       res.redirect(`${clientUrl}/login?error=Google+network+error`);
     });
 

@@ -269,6 +269,133 @@ export async function getOneDriveStorageUsage(credentials?: OneDriveUserCredenti
   }
 }
 
+function createOneDriveUploadSession(
+  accessToken: string,
+  filename: string
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    const safeFilename = encodeURIComponent(filename);
+    const postData = JSON.stringify({
+      item: {
+        '@microsoft.graph.conflictBehavior': 'replace',
+        name: filename,
+      },
+    });
+
+    const req = https.request(
+      `${GRAPH_API_BASE}/me/drive/root:/CloudFusion/${safeFilename}:/createUploadSession`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData),
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.uploadUrl) {
+              resolve(parsed.uploadUrl);
+            } else {
+              console.warn('[OneDrive API] createUploadSession response:', parsed);
+              resolve(null);
+            }
+          } catch (e) {
+            console.error('[OneDrive API] createUploadSession parse error:', e);
+            resolve(null);
+          }
+        });
+      }
+    );
+
+    req.on('error', (err) => {
+      console.error('[OneDrive API] createUploadSession error:', err);
+      resolve(null);
+    });
+
+    req.write(postData);
+    req.end();
+  });
+}
+
+async function uploadToOneDriveSessionInChunks(
+  uploadUrl: string,
+  fileBuffer: Buffer
+): Promise<{ id: string; name: string } | null> {
+  const CHUNK_SIZE = 10 * 320 * 1024; // 3.2 MB (multiple of 320 KiB as required by Microsoft)
+  const totalLength = fileBuffer.length;
+  let offset = 0;
+
+  while (offset < totalLength) {
+    const chunkEnd = Math.min(offset + CHUNK_SIZE, totalLength);
+    const chunkBuffer = fileBuffer.subarray(offset, chunkEnd);
+    const isLastChunk = chunkEnd === totalLength;
+
+    const chunkResult = await new Promise<{ id?: string; name?: string; ok: boolean }>((resolve) => {
+      const parsedUrl = new URL(uploadUrl);
+      const req = https.request(
+        {
+          protocol: parsedUrl.protocol,
+          hostname: parsedUrl.hostname,
+          port: parsedUrl.port || 443,
+          path: `${parsedUrl.pathname}${parsedUrl.search}`,
+          method: 'PUT',
+          headers: {
+            'Content-Length': chunkBuffer.length,
+            'Content-Range': `bytes ${offset}-${chunkEnd - 1}/${totalLength}`,
+          },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (c) => (data += c));
+          res.on('end', () => {
+            try {
+              if (res.statusCode === 200 || res.statusCode === 201) {
+                const parsed = JSON.parse(data);
+                resolve({ id: parsed.id, name: parsed.name, ok: true });
+              } else if (res.statusCode === 202) {
+                // Chunk accepted, session continues
+                resolve({ ok: true });
+              } else {
+                console.warn(`[OneDrive API] Chunk [${offset}-${chunkEnd - 1}] status: ${res.statusCode}`, data);
+                resolve({ ok: false });
+              }
+            } catch (e) {
+              resolve({ ok: isLastChunk ? false : true });
+            }
+          });
+        }
+      );
+
+      req.on('error', (err) => {
+        console.error(`[OneDrive API] Chunk [${offset}-${chunkEnd - 1}] network error:`, err);
+        resolve({ ok: false });
+      });
+
+      req.write(chunkBuffer);
+      req.end();
+    });
+
+    if (!chunkResult.ok) {
+      console.error(`[OneDrive API] Chunk upload failed at offset ${offset}.`);
+      return null;
+    }
+
+    if (chunkResult.id) {
+      console.log(`[OneDrive API] Large Session Upload Complete! Remote ID: ${chunkResult.id}, Name: ${chunkResult.name}`);
+      return { id: chunkResult.id, name: chunkResult.name || 'OneDrive File' };
+    }
+
+    offset = chunkEnd;
+  }
+
+  return null;
+}
+
 /**
  * Upload Encrypted File Buffer to Microsoft OneDrive via Microsoft Graph API
  */
@@ -281,6 +408,18 @@ export async function uploadFileToOneDrive(
   try {
     const accessToken = await getOneDriveAccessToken(credentials);
     if (!accessToken) return null;
+
+    // For files > 4 MB, Microsoft Graph requires createUploadSession
+    if (fileBuffer.length > 4 * 1024 * 1024) {
+      console.log(
+        `[OneDrive API] File size (${(fileBuffer.length / (1024 * 1024)).toFixed(1)} MB) > 4 MB. Using Chunked Upload Session.`
+      );
+      const sessionUrl = await createOneDriveUploadSession(accessToken, filename);
+      if (sessionUrl) {
+        return await uploadToOneDriveSessionInChunks(sessionUrl, fileBuffer);
+      }
+      console.warn('[OneDrive API] Failed to create upload session, attempting direct upload fallback.');
+    }
 
     const safeFilename = encodeURIComponent(filename);
     const uploadPath = `/me/drive/root:/CloudFusion/${safeFilename}:/content`;

@@ -27,6 +27,7 @@ export default function LoginPage() {
       }
 
       if (authToken) {
+        localStorage.removeItem('cloudfusion_quota_cache');
         localStorage.setItem('cloudfusion_token', authToken);
         if (userParam) {
           try {
@@ -35,7 +36,7 @@ export default function LoginPage() {
             localStorage.setItem('cloudfusion_user', userParam);
           }
         }
-        router.push('/dashboard');
+        window.location.href = '/dashboard';
       }
     }
   }, [router]);
@@ -60,11 +61,16 @@ export default function LoginPage() {
       }
 
       if (data.token) {
+        localStorage.removeItem('cloudfusion_quota_cache');
         localStorage.setItem('cloudfusion_token', data.token);
         localStorage.setItem('cloudfusion_user', JSON.stringify(data.user));
       }
 
-      router.push('/dashboard');
+      if (data.user?.role === 'ADMIN') {
+        window.location.href = '/admin';
+      } else {
+        window.location.href = '/dashboard';
+      }
     } catch (err: any) {
       setErrorMsg(err.message || 'Unable to sign in. Please try again.');
     } finally {
@@ -76,7 +82,6 @@ export default function LoginPage() {
     setIsLoading(true);
     window.location.href = 'http://localhost:5000/api/auth/google/login';
   };
-
 
   return (
     <div className="min-h-screen bg-[#060913] text-slate-100 flex flex-col justify-center items-center relative overflow-hidden px-4 font-sans">
@@ -132,7 +137,7 @@ export default function LoginPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@cloudfusion.io"
+                placeholder="name@company.com"
                 className="w-full pl-10 pr-4 py-3 bg-slate-950/70 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 transition-all"
               />
             </div>

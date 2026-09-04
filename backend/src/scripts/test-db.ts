@@ -7,8 +7,8 @@ const prisma = new PrismaClient({
 async function main() {
   console.log('Testing Prisma Database Connection...');
   try {
-    const userCount = await prisma.user.count();
-    console.log('✅ Connection successful! Current user count:', userCount);
+    const users = await prisma.user.findMany({ select: { id: true, email: true, name: true, role: true } });
+    console.log('✅ Current users in DB:', JSON.stringify(users, null, 2));
   } catch (err) {
     console.error('❌ Database connection error:', err);
   } finally {

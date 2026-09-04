@@ -6,7 +6,8 @@ import querystring from 'querystring';
 import https from 'https';
 import jwt from 'jsonwebtoken';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
-import { getAggregatedStorageQuota } from '../services/storage/cloudBalancer.service';
+import { getAggregatedStorageQuota, invalidateQuotaCache } from '../services/storage/cloudBalancer.service';
+import { resolveValidUserId } from '../utils/userResolver';
 import {
   getDropboxAuthUrl,
   exchangeDropboxCode,
@@ -41,23 +42,25 @@ function saveEnvVariable(key: string, value: string) {
 }
 
 function extractUserIdFromReq(req: Request): string | null {
-  const token = (req.query.token as string) || req.headers.authorization?.split(' ')[1];
+  const token = (req.query.token as string) || req.headers.authorization?.split(' ')[1] || (req as any).cookies?.token;
   if (token) {
     try {
-      const secret = process.env.JWT_SECRET || 'supersecret_jwt_key_cloudfusion_production';
+      const secret = process.env.JWT_SECRET || 'cloudfusion_master_jwt_secret_key_32_bytes_min_prod';
       const decoded = jwt.verify(token, secret) as any;
-      return decoded.userId || decoded.id || null;
+      return decoded.userId || decoded.id || decoded.email || null;
     } catch {
       // ignore
     }
   }
-  return (req.query.userId as string) || (req as any).user?.userId || null;
+  return (req.query.userId as string) || (req as any).user?.userId || (req as any).user?.id || (req as any).user?.email || null;
 }
 
 export async function getStorageQuota(req: AuthenticatedRequest, res: Response): Promise<void> {
   try {
-    const userId = req.user?.userId;
-    const quotaData = await getAggregatedStorageQuota(userId);
+    const rawUserId = req.user?.userId || req.user?.id;
+    const userId = await resolveValidUserId(rawUserId, req.user?.email, req.user?.name);
+    const forceLive = req.query.refresh === 'true';
+    const quotaData = await getAggregatedStorageQuota(userId, forceLive);
     res.status(200).json(quotaData);
   } catch (error) {
     console.error('Storage Quota Error:', error);
@@ -67,7 +70,8 @@ export async function getStorageQuota(req: AuthenticatedRequest, res: Response):
 
 export async function getCloudAccounts(req: AuthenticatedRequest, res: Response): Promise<void> {
   try {
-    const userId = req.user?.userId;
+    const rawUserId = req.user?.userId || req.user?.id;
+    const userId = await resolveValidUserId(rawUserId, req.user?.email, req.user?.name);
     if (!userId) {
       res.status(401).json({ error: 'Authentication required.' });
       return;
@@ -101,7 +105,8 @@ export async function getCloudAccounts(req: AuthenticatedRequest, res: Response)
 
 export async function connectCloudAccount(req: AuthenticatedRequest, res: Response): Promise<void> {
   try {
-    const userId = req.user?.userId;
+    const rawUserId = req.user?.userId || req.user?.id;
+    const userId = await resolveValidUserId(rawUserId, req.user?.email, req.user?.name);
     if (!userId) {
       res.status(401).json({ error: 'Authentication required.' });
       return;
@@ -129,19 +134,35 @@ export async function connectCloudAccount(req: AuthenticatedRequest, res: Respon
 
     let credentialsEncrypted = JSON.stringify({ status: 'connected', timestamp: new Date() });
     let resolvedEmail = accountEmail || 'connected@cloudfusion.io';
-    let totalStorageBytes = BigInt(5368709120);
+    let totalStorageBytes = targetProvider === CloudProvider.GOOGLE_DRIVE 
+      ? BigInt(16106127360) 
+      : targetProvider === CloudProvider.MEGA 
+      ? BigInt(21474836480) 
+      : targetProvider === CloudProvider.DROPBOX 
+      ? BigInt(2147483648) 
+      : BigInt(5368709120);
     let usedStorageBytes = BigInt(0);
+
+    const userRecord = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true },
+    });
+    if (!userRecord) {
+      res.status(401).json({ error: 'User record not found.' });
+      return;
+    }
+    const registeredEmail = userRecord.email.toLowerCase().trim();
 
     // 1. AWS S3 Connection Handling
     if (targetProvider === CloudProvider.AWS_S3) {
       const { accessKeyId, secretAccessKey, region, bucketName } = req.body;
-      const targetAccessKey = accessKeyId || process.env.AWS_ACCESS_KEY_ID;
-      const targetSecretKey = secretAccessKey || process.env.AWS_SECRET_ACCESS_KEY;
-      const targetRegion = region || process.env.AWS_REGION || 'eu-north-1';
-      const targetBucket = bucketName || process.env.AWS_S3_BUCKET_NAME || 'cloudfusion-storage-bucket-390630837624-eu-north-1-an';
+      const targetAccessKey = accessKeyId;
+      const targetSecretKey = secretAccessKey;
+      const targetRegion = region || 'eu-north-1';
+      const targetBucket = bucketName;
 
-      if (!targetAccessKey || !targetSecretKey) {
-        res.status(400).json({ error: 'AWS Access Key ID and Secret Access Key are required.' });
+      if (!targetAccessKey || !targetSecretKey || !targetBucket) {
+        res.status(400).json({ error: 'AWS Access Key ID, Secret Access Key, and Bucket Name are required.' });
         return;
       }
 
@@ -173,18 +194,25 @@ export async function connectCloudAccount(req: AuthenticatedRequest, res: Respon
     // 2. MEGA Cloud Connection Handling
     if (targetProvider === CloudProvider.MEGA) {
       const { email, password } = req.body;
-      const targetEmail = email || process.env.MEGA_EMAIL;
-      const targetPassword = password || process.env.MEGA_PASSWORD;
+      const targetEmail = (email || '').toLowerCase().trim();
+      const targetPassword = password;
 
       if (!targetEmail || !targetPassword) {
-        res.status(400).json({ error: 'MEGA Account Email and Password are required.' });
+        res.status(400).json({ error: 'MEGA account email and password are required.' });
+        return;
+      }
+
+      if (targetEmail !== registeredEmail) {
+        res.status(400).json({
+          error: `Email mismatch: You can only link a MEGA account registered to your CloudFusion account email (${userRecord.email}). You entered: ${targetEmail}`,
+        });
         return;
       }
 
       const { verifyMegaCredentials, getMegaStorageUsage } = await import('../services/storage/mega.service');
       const verifyRes = await verifyMegaCredentials(targetEmail, targetPassword);
       if (!verifyRes.success) {
-        res.status(400).json({ error: verifyRes.error || 'Failed to authenticate with MEGA.' });
+        res.status(400).json({ error: verifyRes.error || 'Failed to authenticate with MEGA. Please verify your credentials.' });
         return;
       }
 
@@ -197,6 +225,27 @@ export async function connectCloudAccount(req: AuthenticatedRequest, res: Respon
       const megaQuota = await getMegaStorageUsage({ email: targetEmail, password: targetPassword });
       totalStorageBytes = megaQuota.totalBytes;
       usedStorageBytes = megaQuota.usedBytes;
+    }
+
+    // If provider is OAuth-based and already has valid credentials, preserve them
+    const existingAccount = await prisma.cloudAccount.findUnique({
+      where: {
+        userId_provider: {
+          userId,
+          provider: targetProvider,
+        },
+      },
+    });
+    if (existingAccount) {
+      try {
+        const parsed = JSON.parse(existingAccount.credentialsEncrypted);
+        if (parsed.refreshToken || parsed.accessToken || (parsed.accessKeyId && targetProvider === CloudProvider.AWS_S3)) {
+          credentialsEncrypted = existingAccount.credentialsEncrypted;
+          resolvedEmail = existingAccount.accountEmail || resolvedEmail;
+          totalStorageBytes = existingAccount.totalStorageBytes;
+          usedStorageBytes = existingAccount.usedStorageBytes;
+        }
+      } catch {}
     }
 
     // 3. Upsert per-user cloud account in PostgreSQL
@@ -224,6 +273,8 @@ export async function connectCloudAccount(req: AuthenticatedRequest, res: Respon
       },
     });
 
+    invalidateQuotaCache(userId);
+
     res.status(200).json({
       message: `${provider} cloud account successfully linked to your CloudFusion mesh.`,
       account: {
@@ -240,7 +291,8 @@ export async function connectCloudAccount(req: AuthenticatedRequest, res: Respon
 
 export async function disconnectCloudAccount(req: AuthenticatedRequest, res: Response): Promise<void> {
   try {
-    const userId = req.user?.userId;
+    const rawUserId = req.user?.userId || req.user?.id;
+    const userId = await resolveValidUserId(rawUserId, req.user?.email, req.user?.name);
     if (!userId) {
       res.status(401).json({ error: 'Authentication required.' });
       return;
@@ -261,6 +313,8 @@ export async function disconnectCloudAccount(req: AuthenticatedRequest, res: Res
       },
     });
 
+    invalidateQuotaCache(userId);
+
     res.status(200).json({ message: `${provider} account unlinked successfully.` });
   } catch (error) {
     console.error('Disconnect Account Error:', error);
@@ -273,7 +327,8 @@ export async function disconnectCloudAccount(req: AuthenticatedRequest, res: Res
 // ----------------------------------------------------
 export async function getOneDriveAuthUrlHandler(req: Request, res: Response): Promise<void> {
   try {
-    const userId = extractUserIdFromReq(req) || '';
+    const rawUserId = extractUserIdFromReq(req) || '';
+    const userId = await resolveValidUserId(rawUserId);
     const redirectUri = (req.query.redirectUri as string) || `http://localhost:5000/api/storage/onedrive/callback`;
     const authUrl = getOneDriveAuthUrl(redirectUri, userId);
     res.status(200).json({ authUrl });
@@ -283,11 +338,77 @@ export async function getOneDriveAuthUrlHandler(req: Request, res: Response): Pr
   }
 }
 
+function renderOAuthSuccessHtml(providerTitle: string, providerKey: string): string {
+  const deepLink = `cloudfusion://connected?provider=${providerKey}&status=success`;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${providerTitle} Connected - CloudFusion</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body { background: #0B0F19; color: #F8FAFC; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; text-align: center; }
+    .card { background: rgba(30, 41, 59, 0.85); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 24px; padding: 40px 24px; max-width: 420px; width: 100%; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); backdrop-filter: blur(16px); }
+    .icon-wrap { width: 72px; height: 72px; border-radius: 24px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.35); display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; font-size: 34px; color: #10B981; }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 10px; color: #FFFFFF; letter-spacing: -0.02em; }
+    p { color: #94A3B8; font-size: 14px; line-height: 1.6; margin-bottom: 30px; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 16px; border-radius: 14px; background: linear-gradient(135deg, #06B6D4, #3B82F6); color: #FFFFFF; font-weight: 700; font-size: 15px; text-decoration: none; border: none; cursor: pointer; box-shadow: 0 4px 15px rgba(6, 182, 212, 0.4); }
+    .btn:active { transform: scale(0.98); }
+    .subtext { margin-top: 18px; font-size: 12px; color: #64748B; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon-wrap">✓</div>
+    <h1>${providerTitle} Connected!</h1>
+    <p>Your cloud node was authenticated and linked to your CloudFusion vault.</p>
+    <a href="${deepLink}" class="btn">Return to CloudFusion App</a>
+    <div class="subtext">Attempting to return you to the app automatically...</div>
+  </div>
+  <script>
+    setTimeout(function() {
+      window.location.href = ${JSON.stringify(deepLink)};
+    }, 400);
+  </script>
+</body>
+</html>`;
+}
+
+function renderOAuthErrorHtml(providerTitle: string, errorMsg: string): string {
+  const deepLink = `cloudfusion://connected?status=error`;
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${providerTitle} Error - CloudFusion</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body { background: #0B0F19; color: #F8FAFC; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; text-align: center; }
+    .card { background: rgba(30, 41, 59, 0.85); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 24px; padding: 40px 24px; max-width: 420px; width: 100%; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); }
+    h1 { font-size: 20px; font-weight: 700; margin-bottom: 10px; color: #F87171; }
+    p { color: #94A3B8; font-size: 14px; line-height: 1.6; margin-bottom: 30px; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 16px; border-radius: 14px; background: #EF4444; color: #FFFFFF; font-weight: 700; font-size: 15px; text-decoration: none; border: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>${providerTitle} Link Failed</h1>
+    <p>${errorMsg || 'Could not complete authentication.'}</p>
+    <a href="${deepLink}" class="btn">Return to CloudFusion App</a>
+  </div>
+</body>
+</html>`;
+}
+
 export async function redirectToOneDriveLogin(req: Request, res: Response): Promise<void> {
   try {
-    const userId = extractUserIdFromReq(req) || '';
+    const rawUserId = extractUserIdFromReq(req) || '';
+    const userId = await resolveValidUserId(rawUserId);
+    const isMobile = req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent']));
+    const state = isMobile ? `${userId}___mobile` : userId;
     const redirectUri = 'http://localhost:5000/api/storage/onedrive/callback';
-    const authUrl = getOneDriveAuthUrl(redirectUri, userId);
+    const authUrl = getOneDriveAuthUrl(redirectUri, state);
     res.redirect(authUrl);
   } catch (error: any) {
     res.status(500).send('Error initiating OneDrive authorization.');
@@ -297,10 +418,16 @@ export async function redirectToOneDriveLogin(req: Request, res: Response): Prom
 export async function handleOneDriveGetCallback(req: Request, res: Response): Promise<void> {
   try {
     const code = req.query.code as string;
-    const userId = req.query.state as string;
+    const rawState = (req.query.state as string) || '';
+    const isMobile = rawState.includes('___mobile') || req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent'] || ''));
+    const rawUserId = rawState.replace('___mobile', '');
     const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
 
     if (!code) {
+      if (isMobile) {
+        res.send(renderOAuthErrorHtml('Microsoft OneDrive', 'Authorization code missing or cancelled.'));
+        return;
+      }
       res.redirect(`${clientUrl}/dashboard?error=onedrive_code_missing`);
       return;
     }
@@ -309,8 +436,29 @@ export async function handleOneDriveGetCallback(req: Request, res: Response): Pr
     const tokenResult = await exchangeOneDriveCode(code, redirectUri);
 
     if (tokenResult?.refreshToken) {
+      const userId = await resolveValidUserId(rawUserId);
       if (userId) {
+        const userRecord = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { id: true, email: true },
+        });
+
         const usage = await getOneDriveStorageUsage({ refreshToken: tokenResult.refreshToken });
+
+        if (userRecord && usage.userEmail) {
+          const onedriveEmail = usage.userEmail.toLowerCase().trim();
+          const registeredEmail = userRecord.email.toLowerCase().trim();
+          if (onedriveEmail !== registeredEmail) {
+            const errorMsg = `Microsoft account email mismatch: You authorized with ${usage.userEmail}, but your CloudFusion account is registered to ${userRecord.email}. Please link the Microsoft account matching your registered email.`;
+            if (isMobile) {
+              res.send(renderOAuthErrorHtml('Microsoft OneDrive', errorMsg));
+              return;
+            }
+            res.redirect(`${clientUrl}/dashboard?error=${encodeURIComponent(errorMsg)}`);
+            return;
+          }
+        }
+
         await prisma.cloudAccount.upsert({
           where: {
             userId_provider: {
@@ -339,13 +487,22 @@ export async function handleOneDriveGetCallback(req: Request, res: Response): Pr
             usedStorageBytes: usage.usedBytes,
           },
         });
+        invalidateQuotaCache(userId);
       } else {
         process.env.ONEDRIVE_REFRESH_TOKEN = tokenResult.refreshToken;
         saveEnvVariable('ONEDRIVE_REFRESH_TOKEN', tokenResult.refreshToken);
       }
 
+      if (isMobile) {
+        res.send(renderOAuthSuccessHtml('Microsoft OneDrive', 'ONEDRIVE'));
+        return;
+      }
       res.redirect(`${clientUrl}/dashboard?connected=onedrive`);
     } else {
+      if (isMobile) {
+        res.send(renderOAuthErrorHtml('Microsoft OneDrive', 'Token exchange failed.'));
+        return;
+      }
       res.redirect(`${clientUrl}/dashboard?error=onedrive_auth_failed`);
     }
   } catch (error) {
@@ -356,7 +513,8 @@ export async function handleOneDriveGetCallback(req: Request, res: Response): Pr
 
 export async function handleOneDriveCallback(req: AuthenticatedRequest, res: Response): Promise<void> {
   try {
-    const userId = req.user?.userId;
+    const rawUserId = req.user?.userId || req.user?.id;
+    const userId = await resolveValidUserId(rawUserId, req.user?.email, req.user?.name);
     const { code, redirectUri } = req.body;
 
     if (!code) {
@@ -374,7 +532,23 @@ export async function handleOneDriveCallback(req: AuthenticatedRequest, res: Res
     }
 
     if (userId) {
+      const userRecord = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, email: true },
+      });
       const usage = await getOneDriveStorageUsage({ refreshToken: tokenResult.refreshToken });
+
+      if (userRecord && usage.userEmail) {
+        const onedriveEmail = usage.userEmail.toLowerCase().trim();
+        const registeredEmail = userRecord.email.toLowerCase().trim();
+        if (onedriveEmail !== registeredEmail) {
+          res.status(400).json({
+            error: `Microsoft account email mismatch: You authorized with ${usage.userEmail}, but your CloudFusion account is registered to ${userRecord.email}.`,
+          });
+          return;
+        }
+      }
+
       await prisma.cloudAccount.upsert({
         where: {
           userId_provider: {
@@ -403,6 +577,7 @@ export async function handleOneDriveCallback(req: AuthenticatedRequest, res: Res
           usedStorageBytes: usage.usedBytes,
         },
       });
+      invalidateQuotaCache(userId);
     }
 
     res.status(200).json({
@@ -419,9 +594,12 @@ export async function handleOneDriveCallback(req: AuthenticatedRequest, res: Res
 // ----------------------------------------------------
 export async function redirectToGDriveLogin(req: Request, res: Response): Promise<void> {
   try {
-    const userId = extractUserIdFromReq(req) || '';
+    const rawUserId = extractUserIdFromReq(req) || '';
+    const userId = await resolveValidUserId(rawUserId);
+    const isMobile = req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent']));
+    const state = isMobile ? `${userId}___mobile` : userId;
     const redirectUri = 'http://localhost:5000/api/storage/gdrive/callback';
-    const authUrl = getGDriveAuthUrl(redirectUri, userId);
+    const authUrl = getGDriveAuthUrl(redirectUri, state);
     res.redirect(authUrl);
   } catch (e) {
     res.status(500).send('Error redirecting to Google login.');
@@ -431,10 +609,16 @@ export async function redirectToGDriveLogin(req: Request, res: Response): Promis
 export async function handleGDriveGetCallback(req: Request, res: Response): Promise<void> {
   try {
     const code = req.query.code as string;
-    const userId = req.query.state as string;
+    const rawState = (req.query.state as string) || '';
+    const isMobile = rawState.includes('___mobile') || req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent'] || ''));
+    const rawUserId = rawState.replace('___mobile', '');
     const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
 
     if (!code) {
+      if (isMobile) {
+        res.send(renderOAuthErrorHtml('Google Drive', 'Google authorization code missing or cancelled.'));
+        return;
+      }
       res.redirect(`${clientUrl}/dashboard?error=gdrive_code_missing`);
       return;
     }
@@ -466,9 +650,42 @@ export async function handleGDriveGetCallback(req: Request, res: Response): Prom
         tokenRes.on('end', async () => {
           try {
             const parsed = JSON.parse(data);
+            if (parsed.error) {
+              console.error('[Google Drive Callback] OAuth error from Google:', parsed);
+              if (isMobile) {
+                res.send(renderOAuthErrorHtml('Google Drive', parsed.error_description || parsed.error));
+                return;
+              }
+              res.redirect(`${clientUrl}/dashboard?error=gdrive_${encodeURIComponent(parsed.error_description || parsed.error)}`);
+              return;
+            }
+
+            const userId = await resolveValidUserId(rawUserId);
+            const userRecord = userId
+              ? await prisma.user.findUnique({
+                  where: { id: userId },
+                  select: { id: true, email: true },
+                })
+              : null;
+
             if (parsed.refresh_token) {
               if (userId) {
                 const usage = await getGDriveStorageUsage({ refreshToken: parsed.refresh_token });
+
+                if (userRecord && usage.userEmail) {
+                  const gdriveEmail = usage.userEmail.toLowerCase().trim();
+                  const registeredEmail = userRecord.email.toLowerCase().trim();
+                  if (gdriveEmail !== registeredEmail) {
+                    const errorMsg = `Google account email mismatch: You authorized with ${usage.userEmail}, but your CloudFusion account is registered to ${userRecord.email}. Please link the Google account matching your registered email.`;
+                    if (isMobile) {
+                      res.send(renderOAuthErrorHtml('Google Drive', errorMsg));
+                      return;
+                    }
+                    res.redirect(`${clientUrl}/dashboard?error=${encodeURIComponent(errorMsg)}`);
+                    return;
+                  }
+                }
+
                 await prisma.cloudAccount.upsert({
                   where: {
                     userId_provider: {
@@ -497,25 +714,119 @@ export async function handleGDriveGetCallback(req: Request, res: Response): Prom
                     usedStorageBytes: usage.usedBytes,
                   },
                 });
+                invalidateQuotaCache(userId);
               } else {
                 process.env.GOOGLE_REFRESH_TOKEN = parsed.refresh_token;
                 saveEnvVariable('GOOGLE_REFRESH_TOKEN', parsed.refresh_token);
               }
+
+              if (isMobile) {
+                res.send(renderOAuthSuccessHtml('Google Drive', 'GOOGLE_DRIVE'));
+                return;
+              }
+              res.redirect(`${clientUrl}/dashboard?connected=gdrive`);
+            } else if (parsed.access_token) {
+              if (userId) {
+                const existing = await prisma.cloudAccount.findUnique({
+                  where: {
+                    userId_provider: {
+                      userId,
+                      provider: CloudProvider.GOOGLE_DRIVE,
+                    },
+                  },
+                });
+                let existingRefreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+                if (existing) {
+                  try {
+                    const creds = JSON.parse(existing.credentialsEncrypted);
+                    if (creds.refreshToken) existingRefreshToken = creds.refreshToken;
+                  } catch {}
+                }
+                const usage = await getGDriveStorageUsage({ refreshToken: existingRefreshToken });
+
+                if (userRecord && usage.userEmail) {
+                  const gdriveEmail = usage.userEmail.toLowerCase().trim();
+                  const registeredEmail = userRecord.email.toLowerCase().trim();
+                  if (gdriveEmail !== registeredEmail) {
+                    const errorMsg = `Google account email mismatch: You authorized with ${usage.userEmail}, but your CloudFusion account is registered to ${userRecord.email}. Please link the Google account matching your registered email.`;
+                    if (isMobile) {
+                      res.send(renderOAuthErrorHtml('Google Drive', errorMsg));
+                      return;
+                    }
+                    res.redirect(`${clientUrl}/dashboard?error=${encodeURIComponent(errorMsg)}`);
+                    return;
+                  }
+                }
+
+                await prisma.cloudAccount.upsert({
+                  where: {
+                    userId_provider: {
+                      userId,
+                      provider: CloudProvider.GOOGLE_DRIVE,
+                    },
+                  },
+                  update: {
+                    accountEmail: usage.userEmail || existing?.accountEmail || 'gdrive@cloudfusion.io',
+                    credentialsEncrypted: JSON.stringify({
+                      refreshToken: existingRefreshToken,
+                      accessToken: parsed.access_token,
+                    }),
+                    totalStorageBytes: usage.totalBytes,
+                    usedStorageBytes: usage.usedBytes,
+                  },
+                  create: {
+                    userId,
+                    provider: CloudProvider.GOOGLE_DRIVE,
+                    accountEmail: usage.userEmail || 'gdrive@cloudfusion.io',
+                    credentialsEncrypted: JSON.stringify({
+                      refreshToken: existingRefreshToken,
+                      accessToken: parsed.access_token,
+                    }),
+                    totalStorageBytes: usage.totalBytes,
+                    usedStorageBytes: usage.usedBytes,
+                  },
+                });
+                invalidateQuotaCache(userId);
+              }
+
+              if (isMobile) {
+                res.send(renderOAuthSuccessHtml('Google Drive', 'GOOGLE_DRIVE'));
+                return;
+              }
               res.redirect(`${clientUrl}/dashboard?connected=gdrive`);
             } else {
+              if (isMobile) {
+                res.send(renderOAuthSuccessHtml('Google Drive', 'GOOGLE_DRIVE'));
+                return;
+              }
               res.redirect(`${clientUrl}/dashboard?connected=gdrive_existing`);
             }
-          } catch {
+          } catch (err: any) {
+            console.error('[Google Drive Callback] Exception during token parsing:', err);
+            if (isMobile) {
+              res.send(renderOAuthErrorHtml('Google Drive', err.message || 'Error processing Google callback.'));
+              return;
+            }
             res.redirect(`${clientUrl}/dashboard?error=gdrive_parse_error`);
           }
         });
       }
     );
 
+    tokenReq.on('error', (err) => {
+      console.error('[Google Drive Callback] Token request network error:', err);
+      if (isMobile) {
+        res.send(renderOAuthErrorHtml('Google Drive', 'Network error reaching Google servers.'));
+        return;
+      }
+      res.redirect(`${clientUrl}/dashboard?error=gdrive_network_error`);
+    });
+
     tokenReq.write(postData);
     tokenReq.end();
-  } catch (e) {
-    res.redirect('http://localhost:3000/dashboard?error=gdrive_server_error');
+  } catch (error) {
+    console.error('Google Drive Callback Exception:', error);
+    res.redirect(`http://localhost:3000/dashboard?error=gdrive_server_error`);
   }
 }
 
@@ -524,7 +835,8 @@ export async function handleGDriveGetCallback(req: Request, res: Response): Prom
 // ----------------------------------------------------
 export async function getDropboxAuthUrlHandler(req: Request, res: Response): Promise<void> {
   try {
-    const userId = extractUserIdFromReq(req) || '';
+    const rawUserId = extractUserIdFromReq(req) || '';
+    const userId = await resolveValidUserId(rawUserId);
     const redirectUri = (req.query.redirectUri as string) || 'http://localhost:5000/api/storage/dropbox/callback';
     const authUrl = getDropboxAuthUrl(redirectUri, userId);
     res.status(200).json({ authUrl });
@@ -535,9 +847,12 @@ export async function getDropboxAuthUrlHandler(req: Request, res: Response): Pro
 
 export async function redirectToDropboxLogin(req: Request, res: Response): Promise<void> {
   try {
-    const userId = extractUserIdFromReq(req) || '';
+    const rawUserId = extractUserIdFromReq(req) || '';
+    const userId = await resolveValidUserId(rawUserId);
+    const isMobile = req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent']));
+    const state = isMobile ? `${userId}___mobile` : userId;
     const redirectUri = 'http://localhost:5000/api/storage/dropbox/callback';
-    const authUrl = getDropboxAuthUrl(redirectUri, userId);
+    const authUrl = getDropboxAuthUrl(redirectUri, state);
     res.redirect(authUrl);
   } catch (e) {
     res.status(500).send('Error redirecting to Dropbox.');
@@ -547,10 +862,16 @@ export async function redirectToDropboxLogin(req: Request, res: Response): Promi
 export async function handleDropboxGetCallback(req: Request, res: Response): Promise<void> {
   try {
     const code = req.query.code as string;
-    const userId = req.query.state as string;
+    const rawState = (req.query.state as string) || '';
+    const isMobile = rawState.includes('___mobile') || req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent'] || ''));
+    const rawUserId = rawState.replace('___mobile', '');
     const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
 
     if (!code) {
+      if (isMobile) {
+        res.send(renderOAuthErrorHtml('Dropbox', 'Authorization code missing or cancelled.'));
+        return;
+      }
       res.redirect(`${clientUrl}/dashboard?error=dropbox_code_missing`);
       return;
     }
@@ -559,11 +880,32 @@ export async function handleDropboxGetCallback(req: Request, res: Response): Pro
     const tokenResult = await exchangeDropboxCode(code, redirectUri);
 
     if (tokenResult && tokenResult.accessToken) {
+      const userId = await resolveValidUserId(rawUserId);
       if (userId) {
+        const userRecord = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { id: true, email: true },
+        });
+
         const usage = await getDropboxStorageUsage({
           refreshToken: tokenResult.refreshToken,
           accessToken: tokenResult.accessToken,
         });
+
+        if (userRecord && usage.userEmail) {
+          const dropboxEmail = usage.userEmail.toLowerCase().trim();
+          const registeredEmail = userRecord.email.toLowerCase().trim();
+          if (dropboxEmail !== registeredEmail) {
+            const errorMsg = `Dropbox account email mismatch: You authorized with ${usage.userEmail}, but your CloudFusion account is registered to ${userRecord.email}. Please link the Dropbox account matching your registered email.`;
+            if (isMobile) {
+              res.send(renderOAuthErrorHtml('Dropbox', errorMsg));
+              return;
+            }
+            res.redirect(`${clientUrl}/dashboard?error=${encodeURIComponent(errorMsg)}`);
+            return;
+          }
+        }
+
         await prisma.cloudAccount.upsert({
           where: {
             userId_provider: {
@@ -592,6 +934,7 @@ export async function handleDropboxGetCallback(req: Request, res: Response): Pro
             usedStorageBytes: usage.usedBytes,
           },
         });
+        invalidateQuotaCache(userId);
       } else {
         process.env.DROPBOX_ACCESS_TOKEN = tokenResult.accessToken;
         saveEnvVariable('DROPBOX_ACCESS_TOKEN', tokenResult.accessToken);
@@ -601,8 +944,16 @@ export async function handleDropboxGetCallback(req: Request, res: Response): Pro
         }
       }
 
+      if (isMobile) {
+        res.send(renderOAuthSuccessHtml('Dropbox', 'DROPBOX'));
+        return;
+      }
       res.redirect(`${clientUrl}/dashboard?connected=dropbox`);
     } else {
+      if (isMobile) {
+        res.send(renderOAuthErrorHtml('Dropbox', 'Failed to retrieve access token from Dropbox.'));
+        return;
+      }
       res.redirect(`${clientUrl}/dashboard?error=dropbox_auth_failed`);
     }
   } catch (e) {

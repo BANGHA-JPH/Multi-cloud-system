@@ -4,6 +4,7 @@ import { setupSecurityMiddleware } from './middleware/security.middleware';
 import authRoutes from './routes/auth.routes';
 import fileRoutes from './routes/file.routes';
 import storageRoutes from './routes/storage.routes';
+import adminRoutes from './routes/admin.routes';
 
 dotenv.config();
 
@@ -50,6 +51,7 @@ app.get('/api/health', (_req: Request, res: Response) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/files', fileRoutes);
 app.use('/api/storage', storageRoutes);
+app.use('/api/admin', adminRoutes);
 
 // 404 Handler
 app.use((_req: Request, res: Response) => {

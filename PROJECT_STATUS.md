@@ -52,6 +52,14 @@ npm run dev
 
 Open your browser at: `http://localhost:3000`
 
+### 3. Start the React Native Mobile App (`app`)
+```bash
+cd app
+npm start
+```
+Scan the terminal QR code with the **Expo Go** app on your Android phone.
+*(Default backend URL is configured to your local Wi-Fi IP `http://192.168.78.133:5000` with an in-app server IP switcher).*
+
 ---
 
 ## 🧪 Verified Automated Test Scripts

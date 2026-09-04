@@ -292,6 +292,69 @@ export async function getDropboxStorageUsage(credentials?: DropboxUserCredential
   }
 }
 
+async function uploadToDropboxSessionInChunks(
+  dbx: any,
+  dropboxPath: string,
+  fileBuffer: Buffer
+): Promise<{ id: string; name: string; path: string } | null> {
+  const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB chunks
+  const totalLength = fileBuffer.length;
+
+  const firstChunk = fileBuffer.subarray(0, Math.min(CHUNK_SIZE, totalLength));
+  const startRes = await dbx.filesUploadSessionStart({
+    close: false,
+    contents: firstChunk,
+  });
+
+  const sessionId = startRes.result.session_id;
+  let offset = firstChunk.length;
+
+  while (offset < totalLength) {
+    const nextEnd = Math.min(offset + CHUNK_SIZE, totalLength);
+    const chunk = fileBuffer.subarray(offset, nextEnd);
+
+    if (nextEnd === totalLength) {
+      const finishRes = await dbx.filesUploadSessionFinish({
+        cursor: {
+          session_id: sessionId,
+          offset: offset,
+        },
+        commit: {
+          path: dropboxPath,
+          mode: { '.tag': 'overwrite' },
+          autorename: false,
+          mute: false,
+        },
+        contents: chunk,
+      });
+
+      if (finishRes && finishRes.result) {
+        console.log(
+          `[Dropbox API] Large Session Upload Succeeded! Remote ID: ${finishRes.result.id}, Path: ${finishRes.result.path_display}`
+        );
+        return {
+          id: finishRes.result.id || finishRes.result.path_lower || dropboxPath,
+          name: finishRes.result.name,
+          path: finishRes.result.path_display || dropboxPath,
+        };
+      }
+    } else {
+      await dbx.filesUploadSessionAppendV2({
+        cursor: {
+          session_id: sessionId,
+          offset: offset,
+        },
+        close: false,
+        contents: chunk,
+      });
+    }
+
+    offset = nextEnd;
+  }
+
+  return null;
+}
+
 /**
  * Upload Encrypted File Buffer to Dropbox
  */
@@ -310,6 +373,14 @@ export async function uploadFileToDropbox(
 
     const safeFilename = filename.replace(/[\\/:*?"<>|]/g, '_');
     const dropboxPath = `/CloudFusion/${safeFilename}`;
+
+    // For files > 150 MB, Dropbox requires upload sessions
+    if (fileBuffer.length > 150 * 1024 * 1024) {
+      console.log(
+        `[Dropbox API] File size (${(fileBuffer.length / (1024 * 1024)).toFixed(1)} MB) > 150 MB. Using Dropbox Upload Session.`
+      );
+      return await uploadToDropboxSessionInChunks(dbx, dropboxPath, fileBuffer);
+    }
 
     const res = await dbx.filesUpload({
       path: dropboxPath,

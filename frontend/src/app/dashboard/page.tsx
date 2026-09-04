@@ -19,7 +19,13 @@ interface ActivityItem {
   id: string;
   fileName: string;
   cloudSource: 'Google Drive' | 'Dropbox' | 'AWS S3' | 'MEGA' | 'MS OneDrive';
+  rawCloudProvider?: string;
   size: string;
+  sizeBytes?: number;
+  mimeType?: string;
+  checksumSHA256?: string;
+  isMirrored?: boolean;
+  mirrorProvider?: string | null;
   timestamp: string;
   status: 'COMPLETED' | 'SYNCING' | 'VERIFIED';
   icon: string;
@@ -47,7 +53,7 @@ interface NotificationItem {
 export default function CloudFusionAppDashboard() {
   const router = useRouter();
   const [isMounted, setIsMounted] = useState(false);
-  const [user, setUser] = useState<{ name?: string; email?: string } | null>(null);
+  const [user, setUser] = useState<{ name?: string; email?: string; role?: string } | null>(null);
 
   const [activeNav, setActiveNav] = useState<'dashboard' | 'files' | 'analytics' | 'settings' | 'notifications'>('dashboard');
   const [selectedDestination, setSelectedDestination] = useState<'AI' | 'S3' | 'DROPBOX' | 'GDRIVE' | 'ONEDRIVE' | 'MEGA'>('AI');
@@ -124,13 +130,13 @@ export default function CloudFusionAppDashboard() {
 
     try {
       const token = localStorage.getItem('cloudfusion_token');
-      const payload: any = { provider: 'AWS_S3' };
-      if (s3Mode === 'custom') {
-        payload.accessKeyId = s3AccessKey;
-        payload.secretAccessKey = s3SecretKey;
-        payload.region = s3Region;
-        payload.bucketName = s3Bucket;
-      }
+      const payload: any = {
+        provider: 'AWS_S3',
+        accessKeyId: s3AccessKey,
+        secretAccessKey: s3SecretKey,
+        region: s3Region || 'eu-north-1',
+        bucketName: s3Bucket,
+      };
 
       const res = await fetch('http://localhost:5000/api/storage/connect', {
         method: 'POST',
@@ -150,8 +156,8 @@ export default function CloudFusionAppDashboard() {
       setShowS3Modal(false);
       setToastMessage('🎉 AWS S3 connected successfully to your storage mesh!');
       setTimeout(() => setToastMessage(null), 5000);
-      fetchStorageQuota();
-      fetchCloudAccounts();
+      await fetchStorageQuota();
+      await fetchCloudAccounts();
     } catch (err: any) {
       setS3Error(err.message || 'Verification failed.');
     } finally {
@@ -166,11 +172,12 @@ export default function CloudFusionAppDashboard() {
 
     try {
       const token = localStorage.getItem('cloudfusion_token');
-      const payload: any = { provider: 'MEGA' };
-      if (megaMode === 'custom') {
-        payload.email = megaEmail;
-        payload.password = megaPassword;
-      }
+      const targetEmail = user?.email || megaEmail;
+      const payload: any = {
+        provider: 'MEGA',
+        email: targetEmail,
+        password: megaPassword,
+      };
 
       const res = await fetch('http://localhost:5000/api/storage/connect', {
         method: 'POST',
@@ -188,10 +195,11 @@ export default function CloudFusionAppDashboard() {
       }
 
       setShowMegaModal(false);
+      setMegaPassword('');
       setToastMessage('🎉 MEGA 20 GB Cloud Node Connected Successfully!');
       setTimeout(() => setToastMessage(null), 5000);
-      fetchStorageQuota();
-      fetchCloudAccounts();
+      await fetchStorageQuota();
+      await fetchCloudAccounts();
     } catch (err: any) {
       setMegaError(err.message || 'Authentication failed.');
     } finally {
@@ -230,6 +238,8 @@ export default function CloudFusionAppDashboard() {
     providerName: string;
     progress: number;
     step: 'ENCRYPTING' | 'HASHING' | 'FORWARDING' | 'COMPLETE';
+    currentFileIndex?: number;
+    totalFiles?: number;
   } | null>(null);
   const [storageQuota, setStorageQuota] = useState<{
     totalQuotaBytes: string;
@@ -237,6 +247,32 @@ export default function CloudFusionAppDashboard() {
     freeQuotaBytes: string;
     providers: any;
   } | null>(null);
+  const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
+  const [showAllActivities, setShowAllActivities] = useState(false);
+  const [showAllUploads, setShowAllUploads] = useState(false);
+
+  // File Explorer Search & Filter States
+  const [fileSearchQuery, setFileSearchQuery] = useState('');
+  const [fileCategoryFilter, setFileCategoryFilter] = useState<'ALL' | 'DOCS' | 'IMAGES' | 'MEDIA' | 'ARCHIVES'>('ALL');
+  const [fileProviderFilter, setFileProviderFilter] = useState<string>('ALL');
+
+  // Preview Modal States
+  const [previewModalFile, setPreviewModalFile] = useState<ActivityItem | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewBlobUrl, setPreviewBlobUrl] = useState<string | null>(null);
+  const [previewTextContent, setPreviewTextContent] = useState<string | null>(null);
+
+  // Migration Modal States
+  const [migrateModalFile, setMigrateModalFile] = useState<ActivityItem | null>(null);
+  const [migrateTargetProvider, setMigrateTargetProvider] = useState<string>('MEGA');
+  const [isMigrating, setIsMigrating] = useState(false);
+
+  // Share Modal States
+  const [shareModalFile, setShareModalFile] = useState<ActivityItem | null>(null);
+  const [shareExpiryHours, setShareExpiryHours] = useState<number>(24);
+  const [generatedShareUrl, setGeneratedShareUrl] = useState<string | null>(null);
+  const [isGeneratingShare, setIsGeneratingShare] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
 
   const formatStorageBytes = (bytesStr?: string) => {
     if (!bytesStr) return '0.00 GB';
@@ -247,33 +283,36 @@ export default function CloudFusionAppDashboard() {
     return `${(bytes / 1073741824).toFixed(2)} GB`;
   };
 
+  const formatFriendlyFileSize = (bytesVal: any): string => {
+    if (!bytesVal && bytesVal !== 0) return '0 B';
+    const bytes = Number(bytesVal);
+    if (isNaN(bytes) || bytes <= 0) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  };
+
   const calculatePercentUsed = (usedStr?: string, totalStr?: string) => {
     if (!usedStr || !totalStr || Number(totalStr) === 0) return 0;
     const pct = (Number(usedStr) / Number(totalStr)) * 100;
     return Math.min(100, Math.max(0, Math.round(pct * 10) / 10));
   };
 
-  const fetchStorageQuota = async () => {
+  const fetchStorageQuota = async (force: boolean = true) => {
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const res = await fetch('http://localhost:5000/api/storage/quota', {
+      const res = await fetch(`http://localhost:5000/api/storage/quota${force ? '?refresh=true' : ''}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
       });
       if (res.ok) {
         const data = await res.json();
         setStorageQuota(data);
-        if (data.providers) {
-          setConnectors((prev) =>
-            prev.map((c) => {
-              const provKey = c.id.toLowerCase();
-              const providerInfo = data.providers[provKey];
-              if (providerInfo && providerInfo.isConnected) {
-                return { ...c, isLinked: true };
-              }
-              return c;
-            })
-          );
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('cloudfusion_quota_cache', JSON.stringify(data));
+          } catch (_) {}
         }
       }
     } catch (e) {
@@ -324,7 +363,7 @@ export default function CloudFusionAppDashboard() {
         if (data.files && Array.isArray(data.files)) {
           const formattedActivities: ActivityItem[] = data.files.map((f: any) => ({
             id: f.id,
-            fileName: f.originalName,
+            fileName: f.originalName || f.name || 'Encrypted File',
             cloudSource:
               f.cloudProvider === 'GOOGLE_DRIVE'
                 ? 'Google Drive'
@@ -335,8 +374,14 @@ export default function CloudFusionAppDashboard() {
                 : f.cloudProvider === 'MEGA'
                 ? 'MEGA'
                 : 'MS OneDrive',
-            size: f.sizeBytes ? `${(f.sizeBytes / (1024 * 1024)).toFixed(1)} MB` : '0 KB',
-            timestamp: f.createdAt ? new Date(f.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Just now',
+            rawCloudProvider: f.cloudProvider,
+            size: formatFriendlyFileSize(f.sizeBytes ?? f.size),
+            sizeBytes: Number(f.sizeBytes ?? f.size ?? 0),
+            mimeType: f.mimeType || 'application/octet-stream',
+            checksumSHA256: f.checksumSHA256,
+            isMirrored: !!f.isMirrored,
+            mirrorProvider: f.mirrorProvider || null,
+            timestamp: f.createdAt ? new Date(f.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Just now',
             status: 'COMPLETED',
             icon: f.mimeType?.includes('image')
               ? 'image'
@@ -373,10 +418,10 @@ export default function CloudFusionAppDashboard() {
 
             return {
               id: f.id,
-              name: f.originalName,
+              name: f.originalName || f.name || 'Encrypted File',
               provider: providerName,
               providerBadgeClass: badgeClass,
-              sizeProgress: `${(f.sizeBytes / (1024 * 1024)).toFixed(1)} MB â€¢ Encrypted & Saved`,
+              sizeProgress: `${formatFriendlyFileSize(f.sizeBytes ?? f.size)} • Encrypted & Saved`,
               percentage: 100,
               status: 'COMPLETE',
               icon: f.mimeType?.includes('image')
@@ -397,6 +442,10 @@ export default function CloudFusionAppDashboard() {
   };
 
   const handleFileDownload = async (fileId: string, fileName: string) => {
+    if (downloadingFileId) return;
+    setDownloadingFileId(fileId);
+    setToastMessage(`Decrypting & retrieving "${fileName}" from multi-cloud mesh...`);
+
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
       const res = await fetch(`http://localhost:5000/api/files/download/${fileId}`, {
@@ -418,12 +467,149 @@ export default function CloudFusionAppDashboard() {
       link.remove();
       window.URL.revokeObjectURL(downloadUrl);
 
-      setToastMessage(`Downloaded & decrypted "${fileName}" successfully!`);
+      setToastMessage(`âœ… Decrypted & downloaded "${fileName}" successfully!`);
       setTimeout(() => setToastMessage(null), 4000);
     } catch (e) {
       console.error('File download error:', e);
-      setToastMessage(`Failed to download "${fileName}".`);
+      setToastMessage(`âŒ Failed to download "${fileName}".`);
       setTimeout(() => setToastMessage(null), 4000);
+    } finally {
+      setDownloadingFileId(null);
+    }
+  };
+
+  const matchesCategory = (file: ActivityItem, category: string) => {
+    if (category === 'ALL') return true;
+    const name = (file.fileName || '').toLowerCase();
+    const mime = (file.mimeType || '').toLowerCase();
+    if (category === 'IMAGES') {
+      return mime.includes('image') || /\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(name);
+    }
+    if (category === 'DOCS') {
+      return mime.includes('pdf') || mime.includes('text') || /\.(pdf|doc|docx|txt|md|csv|xlsx|pptx)$/i.test(name);
+    }
+    if (category === 'MEDIA') {
+      return mime.includes('video') || mime.includes('audio') || /\.(mp4|mov|avi|mkv|mp3|wav|ogg)$/i.test(name);
+    }
+    if (category === 'ARCHIVES') {
+      return /\.(zip|rar|tar|gz|7z|bz2)$/i.test(name);
+    }
+    return true;
+  };
+
+  const handlePreviewFile = async (file: ActivityItem) => {
+    setPreviewModalFile(file);
+    setPreviewLoading(true);
+    setPreviewBlobUrl(null);
+    setPreviewTextContent(null);
+
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
+      const res = await fetch(`http://localhost:5000/api/files/preview/${file.id}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'include',
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to retrieve file preview');
+      }
+
+      const blob = await res.blob();
+      const isText = (file.mimeType || '').includes('text') || /\.(txt|md|json|csv|log|js|ts|py|html|css)$/i.test(file.fileName);
+
+      if (isText) {
+        const text = await blob.text();
+        setPreviewTextContent(text);
+      } else {
+        const url = URL.createObjectURL(blob);
+        setPreviewBlobUrl(url);
+      }
+    } catch (err: any) {
+      console.warn('Preview error:', err);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleMigrateFile = async (fileId: string, targetProvider: string) => {
+    setIsMigrating(true);
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
+      const res = await fetch(`http://localhost:5000/api/files/migrate/${fileId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        credentials: 'include',
+        body: JSON.stringify({ targetProvider }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to migrate file');
+      }
+
+      setToastMessage(`🎉 ${data.message || 'File migrated successfully!'}`);
+      setTimeout(() => setToastMessage(null), 5000);
+      setMigrateModalFile(null);
+      await fetchUserFiles();
+      await fetchStorageQuota();
+    } catch (err: any) {
+      alert(`Migration error: ${err.message}`);
+    } finally {
+      setIsMigrating(false);
+    }
+  };
+
+  const handleGenerateShareLink = async (fileId: string, expiryHours: number) => {
+    setIsGeneratingShare(true);
+    setShareCopied(false);
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
+      const res = await fetch(`http://localhost:5000/api/files/share/${fileId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        credentials: 'include',
+        body: JSON.stringify({ expiryHours }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to generate share link');
+      }
+
+      setGeneratedShareUrl(data.shareUrl);
+    } catch (err: any) {
+      alert(`Share link error: ${err.message}`);
+    } finally {
+      setIsGeneratingShare(false);
+    }
+  };
+
+  const handleDeleteFile = async (fileId: string, fileName: string) => {
+    if (!confirm(`Are you sure you want to delete "${fileName}" from your cloud mesh?`)) return;
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
+      const res = await fetch(`http://localhost:5000/api/files/${fileId}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'include',
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to delete file');
+      }
+
+      setToastMessage(`🗑️ File "${fileName}" deleted.`);
+      setTimeout(() => setToastMessage(null), 4000);
+      await fetchUserFiles();
+      await fetchStorageQuota();
+    } catch (err: any) {
+      alert(`Delete error: ${err.message}`);
     }
   };
 
@@ -456,6 +642,16 @@ export default function CloudFusionAppDashboard() {
       } catch (e) {}
     }
 
+    if (typeof window !== 'undefined') {
+      try {
+        const cachedQuota = localStorage.getItem('cloudfusion_quota_cache');
+        if (cachedQuota) {
+          const parsed = JSON.parse(cachedQuota);
+          setStorageQuota(parsed);
+        }
+      } catch (_) {}
+    }
+
     if (!token) {
       router.push('/login');
     } else {
@@ -479,22 +675,8 @@ export default function CloudFusionAppDashboard() {
           const name = providerNameMap[connectedProvider] || connectedProvider;
           const targetEnum = providerEnumMap[connectedProvider];
 
-          if (targetEnum) {
-            fetch('http://localhost:5000/api/storage/connect', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`,
-              },
-              credentials: 'include',
-              body: JSON.stringify({ provider: targetEnum }),
-            })
-              .then(() => {
-                fetchStorageQuota();
-                fetchCloudAccounts();
-              })
-              .catch((err) => console.warn('Account link sync warning:', err));
-          }
+          fetchStorageQuota();
+          fetchCloudAccounts();
 
           setNotifications((prev) => [
             {
@@ -537,6 +719,7 @@ export default function CloudFusionAppDashboard() {
     } finally {
       localStorage.removeItem('cloudfusion_token');
       localStorage.removeItem('cloudfusion_user');
+      localStorage.removeItem('cloudfusion_quota_cache');
       router.push('/login');
     }
   };
@@ -555,11 +738,32 @@ export default function CloudFusionAppDashboard() {
 
     const targetProvider = providerMap[id] || id;
     const isCurrentlyLinked = connector.isLinked;
-    const endpoint = isCurrentlyLinked ? 'disconnect' : 'connect';
 
+    // If unlinked, initiate proper credentials flow or OAuth redirect
+    if (!isCurrentlyLinked) {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') || '' : '';
+      if (id === 'onedrive') {
+        window.location.href = `http://localhost:5000/api/storage/onedrive/login?token=${encodeURIComponent(token)}`;
+        return;
+      } else if (id === 'gdrive') {
+        window.location.href = `http://localhost:5000/api/storage/gdrive/login?token=${encodeURIComponent(token)}`;
+        return;
+      } else if (id === 'dropbox') {
+        window.location.href = `http://localhost:5000/api/storage/dropbox/login?token=${encodeURIComponent(token)}`;
+        return;
+      } else if (id === 's3') {
+        setShowS3Modal(true);
+        return;
+      } else if (id === 'mega') {
+        setShowMegaModal(true);
+        return;
+      }
+    }
+
+    // If currently linked, disconnecting safely removes the account
     try {
       const token = localStorage.getItem('cloudfusion_token');
-      const res = await fetch(`http://localhost:5000/api/storage/${endpoint}`, {
+      const res = await fetch('http://localhost:5000/api/storage/disconnect', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -571,36 +775,21 @@ export default function CloudFusionAppDashboard() {
 
       if (res.ok) {
         setConnectors((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, isLinked: !isCurrentlyLinked } : c))
+          prev.map((c) => (c.id === id ? { ...c, isLinked: false } : c))
         );
 
-        if (!isCurrentlyLinked) {
-          setNotifications((prev) => [
-            {
-              id: `notif-${Date.now()}`,
-              title: `${connector.name} Connected`,
-              message: `${connector.subtitle} added to your storage mesh pool!`,
-              type: 'SUCCESS',
-              timestamp: 'Just now',
-              isRead: false,
-              icon: connector.icon,
-            },
-            ...prev,
-          ]);
-        } else {
-          setNotifications((prev) => [
-            {
-              id: `notif-${Date.now()}`,
-              title: `${connector.name} Disconnected`,
-              message: `${connector.name} unlinked from CloudFusion mesh.`,
-              type: 'INFO',
-              timestamp: 'Just now',
-              isRead: false,
-              icon: connector.icon,
-            },
-            ...prev,
-          ]);
-        }
+        setNotifications((prev) => [
+          {
+            id: `notif-${Date.now()}`,
+            title: `${connector.name} Disconnected`,
+            message: `${connector.name} unlinked from CloudFusion mesh.`,
+            type: 'INFO',
+            timestamp: 'Just now',
+            isRead: false,
+            icon: connector.icon,
+          },
+          ...prev,
+        ]);
 
         await fetchStorageQuota();
         await fetchCloudAccounts();
@@ -662,7 +851,8 @@ export default function CloudFusionAppDashboard() {
 
   const handleFileUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const file = files[0];
+    const fileList = Array.from(files);
+    const totalFiles = fileList.length;
 
     const targetProviderMap = {
       AI: { name: 'FUSION AI', badge: 'bg-blue-500/20 text-blue-300 border-blue-500/30', enum: 'AI' },
@@ -674,98 +864,123 @@ export default function CloudFusionAppDashboard() {
     };
 
     const sel = targetProviderMap[selectedDestination];
-    const tempId = `up-${Date.now()}`;
+    let successfulUploads = 0;
 
-    const newItem: UploadProgressItem = {
-      id: tempId,
-      name: file.name,
-      provider: sel.name,
-      providerBadgeClass: sel.badge,
-      sizeProgress: `Uploading... ${(file.size / (1024 * 1024)).toFixed(1)} MB`,
-      percentage: 35,
-      status: 'UPLOADING',
-      icon: 'upload_file',
-    };
+    for (let i = 0; i < totalFiles; i++) {
+      const file = fileList[i];
+      const tempId = `up-${Date.now()}-${i}`;
+      const fileSizeStr = formatFriendlyFileSize(file.size);
 
-    setUploadItems((prev) => [newItem, ...prev]);
+      const newItem: UploadProgressItem = {
+        id: tempId,
+        name: file.name,
+        provider: sel.name,
+        providerBadgeClass: sel.badge,
+        sizeProgress: `Uploading... ${fileSizeStr}`,
+        percentage: 35,
+        status: 'UPLOADING',
+        icon: 'upload_file',
+      };
 
-    const fileSizeStr = `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+      setUploadItems((prev) => [newItem, ...prev]);
 
-    // Trigger visual upload progress loading modal
-    setActiveUploadModal({
-      fileName: file.name,
-      fileSizeStr,
-      providerName: sel.name,
-      progress: 25,
-      step: 'ENCRYPTING',
-    });
-
-    const stepTimer1 = setTimeout(() => {
-      setActiveUploadModal((prev) => (prev ? { ...prev, progress: 55, step: 'HASHING' } : null));
-    }, 400);
-
-    const stepTimer2 = setTimeout(() => {
-      setActiveUploadModal((prev) => (prev ? { ...prev, progress: 85, step: 'FORWARDING' } : null));
-    }, 900);
-
-    try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const formData = new FormData();
-      formData.append('file', file);
-      if (sel.enum !== 'AI') {
-        formData.append('provider', sel.enum);
-      }
-
-      const res = await fetch('http://localhost:5000/api/files/upload', {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        credentials: 'include',
-        body: formData,
+      // Trigger visual upload progress loading modal with multi-file counter
+      setActiveUploadModal({
+        fileName: file.name,
+        fileSizeStr,
+        providerName: sel.name,
+        progress: 25,
+        step: 'ENCRYPTING',
+        currentFileIndex: i + 1,
+        totalFiles,
       });
 
-      clearTimeout(stepTimer1);
-      clearTimeout(stepTimer2);
+      const stepTimer1 = setTimeout(() => {
+        setActiveUploadModal((prev) => (prev ? { ...prev, progress: 55, step: 'HASHING' } : null));
+      }, 400);
 
-      if (res.ok) {
-        setActiveUploadModal({
-          fileName: file.name,
-          fileSizeStr,
-          providerName: sel.name,
-          progress: 100,
-          step: 'COMPLETE',
+      const stepTimer2 = setTimeout(() => {
+        setActiveUploadModal((prev) => (prev ? { ...prev, progress: 85, step: 'FORWARDING' } : null));
+      }, 900);
+
+      try {
+        const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
+        const formData = new FormData();
+        formData.append('file', file);
+        if (sel.enum !== 'AI') {
+          formData.append('provider', sel.enum);
+        } else {
+          formData.append('strategy', balanceStrategy);
+        }
+
+        const res = await fetch('http://localhost:5000/api/files/upload', {
+          method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          credentials: 'include',
+          body: formData,
         });
 
-        setTimeout(() => setActiveUploadModal(null), 1200);
+        clearTimeout(stepTimer1);
+        clearTimeout(stepTimer2);
 
-        setToastMessage(`"${file.name}" uploaded & encrypted onto ${sel.name}!`);
-        setTimeout(() => setToastMessage(null), 5000);
+        if (res.ok) {
+          successfulUploads++;
+          setActiveUploadModal({
+            fileName: file.name,
+            fileSizeStr,
+            providerName: sel.name,
+            progress: 100,
+            step: 'COMPLETE',
+            currentFileIndex: i + 1,
+            totalFiles,
+          });
 
-        setNotifications((prev) => [
-          {
-            id: `notif-${Date.now()}`,
-            title: 'File Upload Completed',
-            message: `"${file.name}" was encrypted with AES-256 and uploaded to ${sel.name}.`,
-            type: 'SUCCESS',
-            timestamp: 'Just now',
-            isRead: false,
-            icon: 'cloud_done',
-          },
-          ...prev,
-        ]);
+          setUploadItems((prev) =>
+            prev.map((item) =>
+              item.id === tempId
+                ? { ...item, percentage: 100, status: 'COMPLETE', sizeProgress: `Completed (${fileSizeStr})` }
+                : item
+            )
+          );
 
-        fetchStorageQuota();
-        fetchUserFiles();
-      } else {
-        setActiveUploadModal(null);
+          setNotifications((prev) => [
+            {
+              id: `notif-${Date.now()}-${i}`,
+              title: 'File Upload Completed',
+              message: `"${file.name}" was encrypted with AES-256 and uploaded to ${sel.name}.`,
+              type: 'SUCCESS',
+              timestamp: 'Just now',
+              isRead: false,
+              icon: 'cloud_done',
+            },
+            ...prev,
+          ]);
+
+          // Pause briefly between files for smooth visual transition
+          if (i < totalFiles - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 700));
+          }
+        } else {
+          setUploadItems((prev) => prev.filter((item) => item.id !== tempId));
+        }
+      } catch (e) {
+        clearTimeout(stepTimer1);
+        clearTimeout(stepTimer2);
+        console.error(`File upload error for ${file.name}:`, e);
         setUploadItems((prev) => prev.filter((item) => item.id !== tempId));
       }
-    } catch (e) {
-      clearTimeout(stepTimer1);
-      clearTimeout(stepTimer2);
-      setActiveUploadModal(null);
-      console.error('File upload error:', e);
-      setUploadItems((prev) => prev.filter((item) => item.id !== tempId));
     }
+
+    if (totalFiles > 1) {
+      setToastMessage(`Batch complete! Successfully uploaded ${successfulUploads} of ${totalFiles} files.`);
+    } else if (successfulUploads === 1) {
+      setToastMessage(`"${fileList[0].name}" uploaded & encrypted onto ${sel.name}!`);
+    }
+    setTimeout(() => setToastMessage(null), 5000);
+    setTimeout(() => setActiveUploadModal(null), 1200);
+
+    fetchStorageQuota();
+    fetchUserFiles();
   };
 
   const removeUploadItem = (id: string) => {
@@ -807,7 +1022,11 @@ export default function CloudFusionAppDashboard() {
 
             {/* Header & File Info */}
             <div className="space-y-1">
-              <h3 className="font-extrabold text-xl text-white tracking-tight">Encrypting & Uploading File</h3>
+              <h3 className="font-extrabold text-xl text-white tracking-tight">
+                {activeUploadModal.totalFiles && activeUploadModal.totalFiles > 1
+                  ? `Encrypting & Uploading (${activeUploadModal.currentFileIndex || 1} of ${activeUploadModal.totalFiles})`
+                  : 'Encrypting & Uploading File'}
+              </h3>
               <p className="text-xs text-[#8b90a0]">Zero-Knowledge AES-256 Multi-Cloud Stream</p>
             </div>
 
@@ -1359,6 +1578,17 @@ export default function CloudFusionAppDashboard() {
             )}
           </div>
 
+          {/* Admin Console Switcher Link */}
+          {user?.role === 'ADMIN' && (
+            <Link
+              href="/admin"
+              className="px-3.5 py-1.5 rounded-full text-xs font-bold bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/40 transition-all flex items-center gap-1.5 shadow-sm"
+            >
+              <span className="material-symbols-outlined text-sm">admin_panel_settings</span>
+              <span className="hidden sm:inline">Admin Console</span>
+            </Link>
+          )}
+
           {/* User Profile Pill */}
           <div className="flex items-center gap-3 bg-[#1d2022] border border-white/10 px-3 py-1.5 rounded-full">
             <div className="text-right hidden sm:block">
@@ -1455,23 +1685,32 @@ export default function CloudFusionAppDashboard() {
                 <span className="material-symbols-outlined text-xl">settings</span>
                 <span>Settings</span>
               </button>
+
+              {user?.role === 'ADMIN' && (
+                <Link
+                  href="/admin"
+                  className="w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-bold bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/40 shadow-lg shadow-purple-500/10 transition-all mt-2"
+                >
+                  <span className="material-symbols-outlined text-xl">admin_panel_settings</span>
+                  <span>Admin Console</span>
+                </Link>
+              )}
             </nav>
           </div>
 
           <div className="space-y-4">
-            <button className="w-full bg-[#005ac1] hover:bg-[#004494] text-white py-3 px-4 rounded-xl font-bold text-sm shadow-xl active:scale-95 transition-all">
-              Upgrade Storage
-            </button>
-
             <div className="space-y-2 pt-2 border-t border-white/5 text-sm font-medium text-[#c1c6d7]">
               <Link href="#" className="flex items-center space-x-3 px-4 py-2 hover:text-white transition-colors">
                 <span className="material-symbols-outlined text-xl">help</span>
                 <span>Help</span>
               </Link>
-              <Link href="/" className="flex items-center space-x-3 px-4 py-2 hover:text-white transition-colors">
+              <button
+                onClick={handleLogout}
+                className="w-full flex items-center space-x-3 px-4 py-2 hover:text-white transition-colors text-left"
+              >
                 <span className="material-symbols-outlined text-xl">logout</span>
                 <span>Logout</span>
-              </Link>
+              </button>
             </div>
           </div>
         </aside>
@@ -1808,180 +2047,59 @@ export default function CloudFusionAppDashboard() {
                 </div>
               </div>
 
-              {/* CARD 1: DATA HEALTH SCORE */}
+              {/* LIVE MULTI-CLOUD STORAGE DISTRIBUTION */}
               <div className="glass-panel p-8 rounded-3xl border border-white/10 space-y-6">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div>
-                    <h2 className="font-bold text-2xl text-[#e0e3e5]">Data Health Score</h2>
-                    <p className="text-xs text-[#8b90a0] mt-1">Intelligent integrity & security index</p>
+                    <h2 className="font-bold text-2xl text-[#e0e3e5]">Multi-Cloud Storage Distribution</h2>
+                    <p className="text-xs text-[#8b90a0] mt-1">Real-time capacity and utilization breakdown across your connected cloud storage nodes.</p>
                   </div>
-                  <div className="text-5xl font-extrabold text-white tracking-tight">94</div>
+                  <span className="px-3.5 py-1.5 rounded-full text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 w-fit">
+                    Active Storage Share
+                  </span>
                 </div>
 
-                {/* Score Progress Bar */}
-                <div className="w-full bg-[#1d2022] h-3 rounded-full overflow-hidden">
-                  <div className="bg-gradient-to-r from-blue-500 via-purple-500 to-indigo-400 h-full w-[94%] rounded-full shadow-lg" />
-                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 pt-2">
+                  {[
+                    { name: 'MEGA', key: 'mega', color: 'bg-rose-500', text: 'text-rose-400', border: 'border-rose-500/30' },
+                    { name: 'Google Drive', key: 'gdrive', color: 'bg-emerald-500', text: 'text-emerald-400', border: 'border-emerald-500/30' },
+                    { name: 'OneDrive', key: 'onedrive', color: 'bg-cyan-500', text: 'text-cyan-400', border: 'border-cyan-500/30' },
+                    { name: 'AWS S3', key: 's3', color: 'bg-amber-500', text: 'text-amber-400', border: 'border-amber-500/30' },
+                    { name: 'Dropbox', key: 'dropbox', color: 'bg-blue-500', text: 'text-blue-400', border: 'border-blue-500/30' },
+                  ].map((p) => {
+                    const info = storageQuota?.providers?.[p.key];
+                    const isConn = !!info?.isConnected;
+                    const pct = isConn ? calculatePercentUsed(info?.used, info?.total) : 0;
+                    return (
+                      <div key={p.key} className="bg-[#1d2022] p-4 rounded-2xl border border-white/10 flex flex-col justify-between space-y-4">
+                        <div className="flex items-center justify-between">
+                          <span className={`text-xs font-bold ${p.text}`}>{p.name}</span>
+                          <span className={`w-2 h-2 rounded-full ${isConn ? 'bg-emerald-400 animate-pulse' : 'bg-white/20'}`} />
+                        </div>
 
-                {/* Badges */}
-                <div className="flex items-center space-x-6 text-xs font-semibold text-slate-300">
-                  <div className="flex items-center space-x-1.5 text-emerald-400">
-                    <span className="material-symbols-outlined text-base">check_circle</span>
-                    <span>Optimized</span>
-                  </div>
+                        <div className="space-y-2">
+                          <div className="flex items-baseline justify-between text-xs">
+                            <span className="text-white font-extrabold">{isConn ? formatStorageBytes(info?.used) : '0 GB'}</span>
+                            <span className="text-[10px] text-[#8b90a0]">/ {isConn ? formatStorageBytes(info?.total) : '0 GB'}</span>
+                          </div>
 
-                  <div className="flex items-center space-x-1.5 text-blue-400">
-                    <span className="material-symbols-outlined text-base">security</span>
-                    <span>Secure</span>
-                  </div>
-                </div>
-              </div>
+                          <div className="w-full bg-[#101415] h-2 rounded-full overflow-hidden border border-white/5">
+                            <div
+                              className={`${p.color} h-full rounded-full transition-all duration-500`}
+                              style={{ width: `${Math.max(isConn ? 4 : 0, pct)}%` }}
+                            />
+                          </div>
+                        </div>
 
-              {/* CARD 2: CLOUD DISTRIBUTION */}
-              <div className="glass-panel p-8 rounded-3xl border border-white/10 space-y-8">
-                <h2 className="font-bold text-2xl text-[#e0e3e5]">Cloud Distribution</h2>
-
-                {/* Vertical Bar Chart */}
-                <div className="grid grid-cols-4 gap-6 items-end h-48 pt-4 px-4">
-                  {/* GCP */}
-                  <div className="flex flex-col items-center gap-3 h-full justify-end">
-                    <div className="w-full bg-[#1d2022] h-full rounded-2xl relative overflow-hidden flex items-end">
-                      <div className="w-full bg-blue-500 h-[75%] rounded-2xl shadow-lg transition-all duration-700 hover:brightness-110" />
-                    </div>
-                    <span className="text-xs font-bold text-[#8b90a0]">GCP</span>
-                  </div>
-
-                  {/* AWS */}
-                  <div className="flex flex-col items-center gap-3 h-full justify-end">
-                    <div className="w-full bg-[#1d2022] h-full rounded-2xl relative overflow-hidden flex items-end">
-                      <div className="w-full bg-amber-500 h-[50%] rounded-2xl shadow-lg transition-all duration-700 hover:brightness-110" />
-                    </div>
-                    <span className="text-xs font-bold text-[#8b90a0]">AWS</span>
-                  </div>
-
-                  {/* AZR */}
-                  <div className="flex flex-col items-center gap-3 h-full justify-end">
-                    <div className="w-full bg-[#1d2022] h-full rounded-2xl relative overflow-hidden flex items-end">
-                      <div className="w-full bg-cyan-500 h-[65%] rounded-2xl shadow-lg transition-all duration-700 hover:brightness-110" />
-                    </div>
-                    <span className="text-xs font-bold text-[#8b90a0]">AZR</span>
-                  </div>
-
-                  {/* DRP */}
-                  <div className="flex flex-col items-center gap-3 h-full justify-end">
-                    <div className="w-full bg-[#1d2022] h-full rounded-2xl relative overflow-hidden flex items-end">
-                      <div className="w-full bg-indigo-500 h-[30%] rounded-2xl shadow-lg transition-all duration-700 hover:brightness-110" />
-                    </div>
-                    <span className="text-xs font-bold text-[#8b90a0]">DRP</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* CARD 3: COST OPTIMIZATION */}
-              <div className="glass-panel p-8 rounded-3xl border border-white/10 space-y-6">
-                <div>
-                  <h2 className="font-bold text-2xl text-[#e0e3e5]">Cost Optimization</h2>
-                  <p className="text-xs text-[#8b90a0] mt-1">Efficiency of storage tiers vs spending</p>
-                </div>
-
-                {/* Spending Bar Chart */}
-                <div className="flex items-end gap-3 h-36 pt-2">
-                  <div className="flex-1 bg-[#323537]/50 h-[55%] rounded-t-xl" />
-                  <div className="flex-1 bg-[#323537]/50 h-[45%] rounded-t-xl" />
-                  <div className="flex-1 bg-purple-600/80 h-[85%] rounded-t-xl shadow-lg" />
-                  <div className="flex-1 bg-[#323537]/50 h-[60%] rounded-t-xl" />
-                  <div className="flex-1 bg-[#323537]/50 h-[35%] rounded-t-xl" />
-                </div>
-
-                {/* Metrics Comparison */}
-                <div className="flex items-center justify-between pt-2 border-t border-white/5">
-                  <div>
-                    <div className="text-2xl font-extrabold text-white">$142</div>
-                    <div className="text-xs text-[#8b90a0] font-medium">Current</div>
-                  </div>
-
-                  <div className="text-right">
-                    <div className="text-2xl font-extrabold text-purple-400">$89</div>
-                    <div className="text-xs text-[#8b90a0] font-medium">Projected</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* CARD 4: SMART RECOMMENDATIONS */}
-              <div className="glass-panel p-8 rounded-3xl border border-white/10 space-y-6">
-                <div className="flex items-center space-x-3">
-                  <span className="material-symbols-outlined text-purple-400 text-3xl">auto_awesome</span>
-                  <h2 className="font-bold text-2xl text-[#e0e3e5]">Smart Recommendations</h2>
-                </div>
-
-                <div className="space-y-4">
-                  {/* Rec 1: Archive Cold Media */}
-                  <div className="glass-panel p-5 rounded-2xl border border-white/10 flex items-center justify-between gap-4">
-                    <div className="flex items-center space-x-4">
-                      <div className="w-12 h-12 rounded-2xl bg-purple-500/20 text-purple-400 border border-purple-500/30 flex items-center justify-center flex-shrink-0">
-                        <span className="material-symbols-outlined text-2xl">published_with_changes</span>
+                        <div className="text-[10px] text-[#8b90a0] flex items-center justify-between pt-1 border-t border-white/5">
+                          <span>Status</span>
+                          <span className={isConn ? 'text-emerald-400 font-semibold' : 'text-[#8b90a0]'}>
+                            {isConn ? `${pct}% Used` : 'Offline'}
+                          </span>
+                        </div>
                       </div>
-                      <div>
-                        <h4 className="font-bold text-base text-white">Archive Cold Media</h4>
-                        <p className="text-xs text-[#8b90a0] mt-0.5">Move 2.4TB from AWS S3 to Glacier</p>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => setArchiveApplied(!archiveApplied)}
-                      className={`px-6 py-2.5 rounded-full text-xs font-bold transition-all shadow-lg ${
-                        archiveApplied
-                          ? 'bg-emerald-500 text-white'
-                          : 'bg-blue-600 hover:bg-blue-500 text-white'
-                      }`}
-                    >
-                      {archiveApplied ? 'âœ“ Applied' : 'Apply'}
-                    </button>
-                  </div>
-
-                  {/* Rec 2: Deduplication Sync */}
-                  <div className="glass-panel p-5 rounded-2xl border border-white/10 flex items-center justify-between gap-4">
-                    <div className="flex items-center space-x-4">
-                      <div className="w-12 h-12 rounded-2xl bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center justify-center flex-shrink-0">
-                        <span className="material-symbols-outlined text-2xl">cleaning_services</span>
-                      </div>
-                      <div>
-                        <h4 className="font-bold text-base text-white">Deduplication Sync</h4>
-                        <p className="text-xs text-[#8b90a0] mt-0.5">Remove 42GB of duplicate assets</p>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => setDedupAnalyzed(!dedupAnalyzed)}
-                      className={`px-6 py-2.5 rounded-full text-xs font-bold transition-all shadow-lg ${
-                        dedupAnalyzed
-                          ? 'bg-emerald-500 text-white'
-                          : 'bg-blue-600 hover:bg-blue-500 text-white'
-                      }`}
-                    >
-                      {dedupAnalyzed ? 'âœ“ Done' : 'Analyze'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* CARD 5: REAL-TIME FUSION ACTIVE BANNER */}
-              <div className="relative rounded-3xl overflow-hidden h-52 border border-white/10 group shadow-2xl flex items-end p-8">
-                <div
-                  className="absolute inset-0 bg-cover bg-center group-hover:scale-105 transition-transform duration-1000"
-                  style={{
-                    backgroundImage:
-                      "url('https://images.unsplash.com/photo-1558494949-ef010cbdcc31?auto=format&fit=crop&w=1200&q=80')",
-                  }}
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-[#101415] via-[#101415]/70 to-transparent" />
-
-                <div className="relative z-10 space-y-2">
-                  <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-white/20 backdrop-blur-md text-white text-[10px] font-extrabold uppercase tracking-widest border border-white/20">
-                    <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-                    <span>LIVE SYNCING</span>
-                  </div>
-                  <h3 className="font-extrabold text-2xl text-white tracking-tight">Real-time fusion active.</h3>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -2064,100 +2182,109 @@ export default function CloudFusionAppDashboard() {
               </div>
 
               <div className="space-y-6 pt-6 border-t border-white/10">
-                <h2 className="font-extrabold text-2xl text-[#e0e3e5]">Security & Auto-Balancing Controls</h2>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="font-extrabold text-2xl text-[#e0e3e5]">Auto-Balancing & Security Engine</h2>
+                    <p className="text-xs text-[#8b90a0] mt-1">Configure intelligent routing policies across your connected multi-cloud mesh.</p>
+                  </div>
+                  <span className="px-3.5 py-1.5 rounded-full text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                    Engine Active
+                  </span>
+                </div>
 
-                <div className="glass-panel p-6 rounded-3xl border border-white/10 space-y-4">
+                <div className="glass-panel p-6 rounded-3xl border border-white/10 space-y-5">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="font-bold text-base text-white">Intelligent Auto-Balancer Strategy</h3>
-                      <p className="text-xs text-[#8b90a0] mt-0.5">Determine how CloudFusion distributes new file uploads.</p>
+                      <h3 className="font-bold text-base text-white">Intelligent Auto-Balancer Routing Policy</h3>
+                      <p className="text-xs text-[#8b90a0] mt-0.5">Determine how CloudFusion automatically distributes new encrypted file uploads.</p>
                     </div>
                     <span className="material-symbols-outlined text-primary text-2xl">alt_route</span>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
                     <button
-                      onClick={() => setBalanceStrategy('MAX_FREE')}
+                      onClick={() => {
+                        setBalanceStrategy('MAX_FREE');
+                        if (typeof window !== 'undefined') localStorage.setItem('cloudfusion_balance_strategy', 'MAX_FREE');
+                        setToastMessage('⚡ Auto-Balancer policy set to Max Free Quota');
+                        setTimeout(() => setToastMessage(null), 3000);
+                      }}
                       className={`p-4 rounded-2xl border text-left transition-all ${
                         balanceStrategy === 'MAX_FREE'
-                          ? 'bg-primary/10 border-primary text-white shadow-lg'
+                          ? 'bg-primary/10 border-primary text-white shadow-lg ring-1 ring-primary/40'
                           : 'bg-[#1d2022] border-white/5 text-[#8b90a0] hover:text-white'
                       }`}
                     >
-                      <div className="text-xs font-bold text-primary">âš¡ Max Free Quota</div>
-                      <div className="text-[11px] mt-1">Prefers MEGA (20GB) & Drive (15GB) first.</div>
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-bold text-primary flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-sm">bolt</span>
+                          <span>Max Free Quota</span>
+                        </div>
+                        <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          RECOMMENDED
+                        </span>
+                      </div>
+                      <div className="text-[11px] mt-2 text-[#c1c6d7] leading-relaxed">
+                        Dynamically prioritizes the connected cloud with the highest remaining free space.
+                      </div>
                     </button>
 
                     <button
-                      onClick={() => setBalanceStrategy('LOWEST_LATENCY')}
+                      onClick={() => {
+                        setBalanceStrategy('LOWEST_LATENCY');
+                        if (typeof window !== 'undefined') localStorage.setItem('cloudfusion_balance_strategy', 'LOWEST_LATENCY');
+                        setToastMessage('🚀 Auto-Balancer policy set to Lowest Latency');
+                        setTimeout(() => setToastMessage(null), 3000);
+                      }}
                       className={`p-4 rounded-2xl border text-left transition-all ${
                         balanceStrategy === 'LOWEST_LATENCY'
-                          ? 'bg-purple-500/10 border-purple-500 text-white shadow-lg'
+                          ? 'bg-purple-500/10 border-purple-500 text-white shadow-lg ring-1 ring-purple-500/40'
                           : 'bg-[#1d2022] border-white/5 text-[#8b90a0] hover:text-white'
                       }`}
                     >
-                      <div className="text-xs font-bold text-purple-400">ðŸš€ Lowest Latency</div>
-                      <div className="text-[11px] mt-1">Selects fastest ping cloud server.</div>
+                      <div className="text-xs font-bold text-purple-400 flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm">speed</span>
+                        <span>Lowest Latency</span>
+                      </div>
+                      <div className="text-[11px] mt-2 text-[#8b90a0] leading-relaxed">
+                        Routes uploads to the provider endpoint with the fastest response and roundtrip latency.
+                      </div>
                     </button>
 
                     <button
-                      onClick={() => setBalanceStrategy('DUAL_MIRROR')}
+                      onClick={() => {
+                        setBalanceStrategy('DUAL_MIRROR');
+                        if (typeof window !== 'undefined') localStorage.setItem('cloudfusion_balance_strategy', 'DUAL_MIRROR');
+                        setToastMessage('🛡️ Auto-Balancer policy set to Dual Mirroring (Fault-Tolerant Replicas)');
+                        setTimeout(() => setToastMessage(null), 3000);
+                      }}
                       className={`p-4 rounded-2xl border text-left transition-all ${
                         balanceStrategy === 'DUAL_MIRROR'
-                          ? 'bg-cyan-500/10 border-cyan-500 text-white shadow-lg'
+                          ? 'bg-cyan-500/10 border-cyan-500 text-white shadow-lg ring-1 ring-cyan-500/40'
                           : 'bg-[#1d2022] border-white/5 text-[#8b90a0] hover:text-white'
                       }`}
                     >
-                      <div className="text-xs font-bold text-cyan-400">ðŸ›¡ï¸ Dual Mirroring</div>
-                      <div className="text-[11px] mt-1">Replicates file across 2 providers.</div>
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-bold text-cyan-400 flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-sm">shield</span>
+                          <span>Dual Mirroring</span>
+                        </div>
+                        <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                          HIGH AVAILABILITY
+                        </span>
+                      </div>
+                      <div className="text-[11px] mt-2 text-[#8b90a0] leading-relaxed">
+                        Clones encrypted blocks across 2 clouds simultaneously. Automatic failover on download.
+                      </div>
                     </button>
                   </div>
-                </div>
 
-                <div className="glass-panel p-6 rounded-3xl border border-white/10 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="font-bold text-base text-white">SHA-256 Checksum Audit Frequency</h3>
-                      <p className="text-xs text-[#8b90a0] mt-0.5">Automated background integrity verification.</p>
-                    </div>
-                    <span className="material-symbols-outlined text-secondary text-2xl">fact_check</span>
+                  <div className="pt-3 border-t border-white/5 flex items-center justify-between text-xs text-[#8b90a0]">
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-emerald-400 text-base">verified</span>
+                      <span>Zero-Knowledge AES-256-GCM + SHA-256 Checksums verified automatically on all routes.</span>
+                    </span>
                   </div>
-
-                  <div className="flex items-center gap-3 pt-2">
-                    {(['REALTIME', 'DAILY', 'WEEKLY'] as const).map((freq) => (
-                      <button
-                        key={freq}
-                        onClick={() => setAutoIntegrityAudit(freq)}
-                        className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all border ${
-                          autoIntegrityAudit === freq
-                            ? 'bg-secondary text-[#002e68] border-secondary shadow-lg'
-                            : 'bg-[#1d2022] text-[#8b90a0] border-white/5 hover:text-white'
-                        }`}
-                      >
-                        {freq}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="glass-panel p-6 rounded-3xl border border-white/10 flex items-center justify-between">
-                  <div>
-                    <h3 className="font-bold text-base text-white">Multi-Factor Authentication (2FA)</h3>
-                    <p className="text-xs text-[#8b90a0] mt-0.5">Require an authenticator code on account login.</p>
-                  </div>
-
-                  <button
-                    onClick={() => setMfaEnabled(!mfaEnabled)}
-                    className={`w-12 h-6 rounded-full relative transition-colors p-1 flex items-center ${
-                      mfaEnabled ? 'bg-blue-600' : 'bg-[#323537]'
-                    }`}
-                  >
-                    <div
-                      className={`w-4 h-4 rounded-full bg-white transition-transform shadow-md ${
-                        mfaEnabled ? 'translate-x-6' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
                 </div>
               </div>
             </div>
@@ -2329,14 +2456,22 @@ export default function CloudFusionAppDashboard() {
                     <span className="material-symbols-outlined text-3xl text-primary">upload_file</span>
                   </div>
 
-                  <p className="font-semibold text-base text-[#e0e3e5]">Drag and drop here</p>
+                  <p className="font-semibold text-base text-[#e0e3e5]">Drag and drop files here</p>
                   <p className="text-xs text-[#8b90a0] max-w-md mx-auto mt-2 leading-relaxed">
-                    Or click to browse your local machine for the assets you want to fuse.
+                    Select or drag single or multiple files to fuse across your cloud mesh.
                   </p>
 
                   <label className="inline-flex items-center gap-2 mt-6 px-8 py-3.5 rounded-full bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm shadow-xl hover:scale-105 active:scale-95 transition-transform cursor-pointer">
                     <span>+ Choose Files</span>
-                    <input type="file" onChange={(e) => handleFileUpload(e.target.files)} className="hidden" />
+                    <input
+                      type="file"
+                      multiple
+                      onChange={(e) => {
+                        handleFileUpload(e.target.files);
+                        e.target.value = '';
+                      }}
+                      className="hidden"
+                    />
                   </label>
                 </div>
               </div>
@@ -2571,11 +2706,28 @@ export default function CloudFusionAppDashboard() {
 
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <h2 className="font-extrabold text-2xl text-[#e0e3e5]">Recent Uploads</h2>
-                  <Link href="#" className="text-xs font-semibold text-[#c1c6d7] hover:text-primary transition-colors flex items-center gap-1">
-                    <span>View all</span>
-                    <span className="material-symbols-outlined text-xs">arrow_forward</span>
-                  </Link>
+                  <div className="flex items-center gap-3">
+                    <h2 className="font-extrabold text-2xl text-[#e0e3e5]">Recent Uploads</h2>
+                    {uploadItems.length > 0 && (
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-white/10 text-[#c1c6d7]">
+                        {showAllUploads
+                          ? `Showing all ${uploadItems.length} ${uploadItems.length === 1 ? 'upload' : 'uploads'}`
+                          : `Showing latest ${Math.min(5, uploadItems.length)} of ${uploadItems.length}`}
+                      </span>
+                    )}
+                  </div>
+
+                  {uploadItems.length > 5 && (
+                    <button
+                      onClick={() => setShowAllUploads((prev) => !prev)}
+                      className="px-3.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-primary hover:text-white border border-white/10 transition-all flex items-center gap-1.5 shadow-sm"
+                    >
+                      <span>{showAllUploads ? 'Close & Show Less' : `See All Uploads (${uploadItems.length})`}</span>
+                      <span className="material-symbols-outlined text-sm">
+                        {showAllUploads ? 'expand_less' : 'expand_more'}
+                      </span>
+                    </button>
+                  )}
                 </div>
 
                 <div className="space-y-3">
@@ -2586,7 +2738,7 @@ export default function CloudFusionAppDashboard() {
                       <p className="text-xs text-[#8b90a0]">Choose files above to encrypt and upload assets to your cloud mesh.</p>
                     </div>
                   ) : (
-                    uploadItems.map((item) => (
+                    (showAllUploads ? uploadItems : uploadItems.slice(0, 5)).map((item) => (
                       <div key={item.id} className="glass-panel p-4 rounded-2xl border border-white/10 flex items-center justify-between gap-4">
                         <div className="flex items-center space-x-4 flex-1 min-w-0">
                           <div className="w-12 h-12 rounded-xl bg-[#1d2022] border border-white/10 flex items-center justify-center flex-shrink-0 text-primary">
@@ -2627,11 +2779,21 @@ export default function CloudFusionAppDashboard() {
                           {item.status === 'COMPLETE' && (
                             <button
                               onClick={() => handleFileDownload(item.id, item.name)}
+                              disabled={downloadingFileId === item.id}
                               title="Download Decrypted File"
-                              className="px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition-all flex items-center gap-1.5"
+                              className="px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition-all flex items-center gap-1.5 disabled:opacity-60"
                             >
-                              <span className="material-symbols-outlined text-base">cloud_download</span>
-                              <span>Download</span>
+                              {downloadingFileId === item.id ? (
+                                <>
+                                  <span className="material-symbols-outlined text-base animate-spin text-cyan-300">sync</span>
+                                  <span>Decrypting...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="material-symbols-outlined text-base">cloud_download</span>
+                                  <span>Download</span>
+                                </>
+                              )}
                             </button>
                           )}
                           <button
@@ -2644,6 +2806,216 @@ export default function CloudFusionAppDashboard() {
                       </div>
                     ))
                   )}
+                </div>
+              </div>
+
+            {/* INTERACTIVE FILE EXPLORER & VAULT */}
+              <div className="glass-panel rounded-3xl p-6 sm:p-8 border border-white/10 space-y-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="font-extrabold text-2xl text-[#e0e3e5] tracking-tight">Cloud Mesh File Explorer</h2>
+                    <p className="text-xs text-[#8b90a0] mt-0.5">Explore, decrypt, preview, and rebalance all encrypted assets across your connected nodes.</p>
+                  </div>
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-white/5 border border-white/10 text-[#c1c6d7] w-fit">
+                    {activities.filter((f) => {
+                      const matchesSearch = !fileSearchQuery || f.fileName.toLowerCase().includes(fileSearchQuery.toLowerCase());
+                      const matchesCat = matchesCategory(f, fileCategoryFilter);
+                      const matchesProv = fileProviderFilter === 'ALL' || f.rawCloudProvider === fileProviderFilter;
+                      return matchesSearch && matchesCat && matchesProv;
+                    }).length} files displayed
+                  </span>
+                </div>
+
+                {/* Search Bar & Provider Dropdown */}
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <div className="relative flex-1">
+                    <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-lg">search</span>
+                    <input
+                      type="text"
+                      placeholder="Search files by name..."
+                      value={fileSearchQuery}
+                      onChange={(e) => setFileSearchQuery(e.target.value)}
+                      className="w-full bg-[#101415] border border-white/10 rounded-2xl pl-10 pr-9 py-2.5 text-xs text-white placeholder:text-[#8b90a0] focus:outline-none focus:border-blue-500 transition-colors"
+                    />
+                    {fileSearchQuery && (
+                      <button
+                        onClick={() => setFileSearchQuery('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs font-bold"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+
+                  <select
+                    value={fileProviderFilter}
+                    onChange={(e) => setFileProviderFilter(e.target.value)}
+                    className="bg-[#101415] border border-white/10 rounded-2xl px-4 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors cursor-pointer"
+                  >
+                    <option value="ALL">All Cloud Providers</option>
+                    <option value="GOOGLE_DRIVE">Google Drive</option>
+                    <option value="ONEDRIVE">Microsoft OneDrive</option>
+                    <option value="DROPBOX">Dropbox</option>
+                    <option value="AWS_S3">AWS S3</option>
+                    <option value="MEGA">MEGA</option>
+                  </select>
+                </div>
+
+                {/* Category Filter Chips */}
+                <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                  {[
+                    { id: 'ALL', label: 'All Files', icon: 'folder' },
+                    { id: 'DOCS', label: 'Documents', icon: 'description' },
+                    { id: 'IMAGES', label: 'Images', icon: 'image' },
+                    { id: 'MEDIA', label: 'Media', icon: 'movie' },
+                    { id: 'ARCHIVES', label: 'Archives', icon: 'inventory_2' },
+                  ].map((cat) => (
+                    <button
+                      key={cat.id}
+                      onClick={() => setFileCategoryFilter(cat.id as any)}
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all shrink-0 ${
+                        fileCategoryFilter === cat.id
+                          ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+                          : 'bg-[#101415] text-[#8b90a0] hover:text-white border border-white/5'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-sm">{cat.icon}</span>
+                      <span>{cat.label}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Filtered File Table */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm text-[#e0e3e5]">
+                    <thead className="text-xs font-bold text-[#8b90a0] uppercase border-b border-white/10">
+                      <tr>
+                        <th className="pb-4">File Name</th>
+                        <th className="pb-4">Provider</th>
+                        <th className="pb-4">Size</th>
+                        <th className="pb-4">Uploaded</th>
+                        <th className="pb-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {(() => {
+                        const filtered = activities.filter((f) => {
+                          const matchesSearch = !fileSearchQuery || f.fileName.toLowerCase().includes(fileSearchQuery.toLowerCase());
+                          const matchesCat = matchesCategory(f, fileCategoryFilter);
+                          const matchesProv = fileProviderFilter === 'ALL' || f.rawCloudProvider === fileProviderFilter;
+                          return matchesSearch && matchesCat && matchesProv;
+                        });
+
+                        if (filtered.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={5} className="py-10 text-center text-xs text-[#8b90a0]">
+                                <div className="flex flex-col items-center justify-center space-y-2">
+                                  <span className="material-symbols-outlined text-4xl opacity-40">search_off</span>
+                                  <p>No files match your current search or category filter.</p>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        return filtered.map((file) => (
+                          <tr key={file.id} className="hover:bg-white/5 transition-colors">
+                            <td className="py-4 font-semibold text-white">
+                              <div className="flex items-center space-x-3">
+                                <span className="material-symbols-outlined text-primary text-xl">{file.icon}</span>
+                                <div className="space-y-1">
+                                  <div className="font-semibold text-sm max-w-xs truncate" title={file.fileName}>{file.fileName}</div>
+                                  {file.isMirrored && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                                      <span className="material-symbols-outlined text-[11px]">shield</span>
+                                      <span>Dual Mirrored ({file.mirrorProvider || 'Replica'})</span>
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="py-4">
+                              <span
+                                className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                                  file.cloudSource === 'Google Drive'
+                                    ? 'bg-primary/10 text-primary border border-primary/20'
+                                    : file.cloudSource === 'Dropbox'
+                                    ? 'bg-secondary/10 text-secondary border border-secondary/20'
+                                    : file.cloudSource === 'MEGA'
+                                    ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                    : file.cloudSource === 'AWS S3'
+                                    ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                    : 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'
+                                }`}
+                              >
+                                {file.cloudSource}
+                              </span>
+                            </td>
+                            <td className="py-4 text-[#c1c6d7] text-xs">{file.size}</td>
+                            <td className="py-4 text-xs text-[#8b90a0]">{file.timestamp}</td>
+                            <td className="py-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                <button
+                                  onClick={() => handlePreviewFile(file)}
+                                  title="Preview in Browser"
+                                  className="px-2.5 py-1 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/40 text-xs font-bold transition-all flex items-center gap-1 shadow-sm"
+                                >
+                                  <span className="material-symbols-outlined text-sm">visibility</span>
+                                  <span className="hidden sm:inline">Preview</span>
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setShareModalFile(file);
+                                    setGeneratedShareUrl(null);
+                                    setShareCopied(false);
+                                  }}
+                                  title="Generate Secure Share Link"
+                                  className="px-2.5 py-1 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/40 text-xs font-bold transition-all flex items-center gap-1 shadow-sm"
+                                >
+                                  <span className="material-symbols-outlined text-sm">share</span>
+                                  <span className="hidden sm:inline">Share</span>
+                                </button>
+                                <button
+                                  onClick={() => setMigrateModalFile(file)}
+                                  title="Migrate / Move to Another Cloud"
+                                  className="px-2.5 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition-all flex items-center gap-1 shadow-sm"
+                                >
+                                  <span className="material-symbols-outlined text-sm">drive_file_move</span>
+                                  <span className="hidden sm:inline">Move</span>
+                                </button>
+                                <button
+                                  onClick={() => handleFileDownload(file.id, file.fileName)}
+                                  disabled={downloadingFileId === file.id}
+                                  title="Download & Decrypt File"
+                                  className="px-2.5 py-1 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition-all flex items-center gap-1 shadow-sm disabled:opacity-60"
+                                >
+                                  {downloadingFileId === file.id ? (
+                                    <>
+                                      <span className="material-symbols-outlined text-sm animate-spin text-cyan-300">sync</span>
+                                      <span className="hidden sm:inline">Decrypting...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span className="material-symbols-outlined text-sm">cloud_download</span>
+                                      <span className="hidden sm:inline">Download</span>
+                                    </>
+                                  )}
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteFile(file.id, file.fileName)}
+                                  title="Delete File"
+                                  className="p-1 rounded-lg hover:bg-rose-500/20 text-[#8b90a0] hover:text-rose-400 transition-all"
+                                >
+                                  <span className="material-symbols-outlined text-base">delete</span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>
@@ -2666,167 +3038,138 @@ export default function CloudFusionAppDashboard() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 relative">
-                <div className="lg:col-span-8 glass-panel rounded-3xl p-8 flex flex-col md:flex-row items-center gap-8 relative overflow-hidden border border-white/10">
-                  <div className="relative w-56 h-56 flex-shrink-0 flex items-center justify-center">
-                    <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
-                      <circle cx="50" cy="50" r="40" stroke="#1d2022" strokeWidth="12" fill="transparent" />
-                      <circle
-                        cx="50"
-                        cy="50"
-                        r="40"
-                        stroke="#adc7ff"
-                        strokeWidth="12"
-                        strokeDasharray="251.2"
-                        strokeDashoffset="100"
-                        fill="transparent"
-                      />
-                      <circle
-                        cx="50"
-                        cy="50"
-                        r="40"
-                        stroke="#dcb8ff"
-                        strokeWidth="12"
-                        strokeDasharray="251.2"
-                        strokeDashoffset="170"
-                        fill="transparent"
-                      />
-                      <circle
-                        cx="50"
-                        cy="50"
-                        r="40"
-                        stroke="#4a8eff"
-                        strokeWidth="12"
-                        strokeDasharray="251.2"
-                        strokeDashoffset="225"
-                        fill="transparent"
-                      />
-                    </svg>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                      <div className="text-3xl font-extrabold text-white tracking-tight">
-                        {storageQuota
-                          ? (Number(storageQuota.totalQuotaBytes) / 1073741824).toFixed(1)
-                          : '0.0'}
-                        <span className="text-sm font-semibold text-[#c1c6d7]">GB</span>
-                      </div>
-                      <div className="text-[11px] text-[#8b90a0] font-medium mt-0.5">Total Mesh Quota</div>
+              <div className="glass-panel rounded-3xl p-8 flex flex-col md:flex-row items-center gap-8 relative overflow-hidden border border-white/10">
+                <div className="relative w-56 h-56 flex-shrink-0 flex items-center justify-center">
+                  <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                    <circle cx="50" cy="50" r="40" stroke="#1d2022" strokeWidth="12" fill="transparent" />
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r="40"
+                      stroke="#adc7ff"
+                      strokeWidth="12"
+                      strokeDasharray="251.2"
+                      strokeDashoffset="100"
+                      fill="transparent"
+                    />
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r="40"
+                      stroke="#dcb8ff"
+                      strokeWidth="12"
+                      strokeDasharray="251.2"
+                      strokeDashoffset="170"
+                      fill="transparent"
+                    />
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r="40"
+                      stroke="#4a8eff"
+                      strokeWidth="12"
+                      strokeDasharray="251.2"
+                      strokeDashoffset="225"
+                      fill="transparent"
+                    />
+                  </svg>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <div className="text-3xl font-extrabold text-white tracking-tight">
+                      {storageQuota
+                        ? (Number(storageQuota.totalQuotaBytes) / 1073741824).toFixed(1)
+                        : '0.0'}
+                      <span className="text-sm font-semibold text-[#c1c6d7]">GB</span>
                     </div>
-                  </div>
-
-                  <div className="flex-1 space-y-6">
-                    <div>
-                      <h3 className="font-bold text-2xl text-[#e0e3e5]">Multi-Cloud Storage Mesh</h3>
-                      <p className="text-sm text-[#c1c6d7] mt-2 leading-relaxed">
-                        {storageQuota && Number(storageQuota.totalQuotaBytes) > 0
-                          ? `Unified 5-cloud mesh active across connected providers. Free available quota: ${(Number(storageQuota.freeQuotaBytes) / 1073741824).toFixed(1)} GB.`
-                          : 'Connect your cloud accounts below to aggregate free storage into a unified 52 GB pool.'}
-                      </p>
-                    </div>
-
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                      <div className="bg-[#1d2022] p-2.5 rounded-2xl border border-white/5 text-center">
-                        <div className="text-[10px] text-[#8b90a0] font-medium truncate">MEGA</div>
-                        <div className="text-xs font-extrabold text-rose-400 mt-1">
-                          {storageQuota?.providers?.mega?.isConnected
-                            ? `${(Number(storageQuota.providers.mega.total) / 1073741824).toFixed(0)} GB`
-                            : '0 GB'}
-                        </div>
-                      </div>
-                      <div className="bg-[#1d2022] p-2.5 rounded-2xl border border-white/5 text-center">
-                        <div className="text-[10px] text-[#8b90a0] font-medium truncate">Drive</div>
-                        <div className="text-xs font-extrabold text-emerald-400 mt-1">
-                          {storageQuota?.providers?.gdrive?.isConnected
-                            ? `${(Number(storageQuota.providers.gdrive.total) / 1073741824).toFixed(0)} GB`
-                            : '0 GB'}
-                        </div>
-                      </div>
-                      <div className="bg-[#1d2022] p-2.5 rounded-2xl border border-white/5 text-center">
-                        <div className="text-[10px] text-[#8b90a0] font-medium truncate">OneDrive</div>
-                        <div className="text-xs font-extrabold text-cyan-400 mt-1">
-                          {storageQuota?.providers?.onedrive?.isConnected
-                            ? `${(Number(storageQuota.providers.onedrive.total) / 1073741824).toFixed(0)} GB`
-                            : '0 GB'}
-                        </div>
-                      </div>
-                      <div className="bg-[#1d2022] p-2.5 rounded-2xl border border-white/5 text-center">
-                        <div className="text-[10px] text-[#8b90a0] font-medium truncate">AWS S3</div>
-                        <div className="text-xs font-extrabold text-amber-400 mt-1">
-                          {storageQuota?.providers?.s3?.isConnected
-                            ? `${(Number(storageQuota.providers.s3.total) / 1073741824).toFixed(0)} GB`
-                            : '0 GB'}
-                        </div>
-                      </div>
-                      <div className="bg-[#1d2022] p-2.5 rounded-2xl border border-white/5 text-center">
-                        <div className="text-[10px] text-[#8b90a0] font-medium truncate">Dropbox</div>
-                        <div className="text-xs font-extrabold text-blue-400 mt-1">
-                          {storageQuota?.providers?.dropbox?.isConnected
-                            ? `${(Number(storageQuota.providers.dropbox.total) / 1073741824).toFixed(0)} GB`
-                            : '0 GB'}
-                        </div>
-                      </div>
-                    </div>
+                    <div className="text-[11px] text-[#8b90a0] font-medium mt-0.5">Total Mesh Quota</div>
                   </div>
                 </div>
 
-                <div className="lg:col-span-4 flex flex-col gap-6">
-                  <div className="glass-panel rounded-3xl p-6 border border-white/10 flex flex-col justify-between space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="w-10 h-10 rounded-xl bg-primary/20 flex items-center justify-center text-primary">
-                        <span className="material-symbols-outlined text-2xl">auto_awesome</span>
-                      </div>
-                      <span className="px-3 py-1 rounded-full text-xs font-semibold bg-primary/10 text-primary border border-primary/20">
-                        High Impact
-                      </span>
-                    </div>
-
-                    <div>
-                      <h4 className="font-bold text-lg text-[#e0e3e5]">Optimize Storage</h4>
-                      <p className="text-xs text-[#c1c6d7] mt-1 leading-relaxed">
-                        42GB of duplicate assets detected across Dropbox and Google Drive.
-                      </p>
-                    </div>
-
-                    <button
-                      onClick={() => setActiveNav('files')}
-                      className="w-full bg-[#1d2022] hover:bg-[#323537] border border-white/10 text-white font-semibold py-2.5 rounded-xl text-xs transition-colors"
-                    >
-                      Execute Cleanup
-                    </button>
+                <div className="flex-1 space-y-6">
+                  <div>
+                    <h3 className="font-bold text-2xl text-[#e0e3e5]">Multi-Cloud Storage Mesh</h3>
+                    <p className="text-sm text-[#c1c6d7] mt-2 leading-relaxed">
+                      {storageQuota && Number(storageQuota.totalQuotaBytes) > 0
+                        ? `Unified 5-cloud mesh active across connected providers. Free available quota: ${(Number(storageQuota.freeQuotaBytes) / 1073741824).toFixed(1)} GB.`
+                        : 'Connect your cloud accounts below to aggregate free storage into a unified 52 GB pool.'}
+                    </p>
                   </div>
 
-                  <div className="glass-panel rounded-3xl p-6 border border-white/10 flex flex-col justify-between space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="w-10 h-10 rounded-xl bg-secondary/20 flex items-center justify-center text-secondary">
-                        <span className="material-symbols-outlined text-2xl">security</span>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                    <div className="bg-[#1d2022] p-2.5 rounded-2xl border border-white/5 text-center">
+                      <div className="text-[10px] text-[#8b90a0] font-medium truncate">MEGA</div>
+                      <div className="text-xs font-extrabold text-rose-400 mt-1">
+                        {storageQuota?.providers?.mega?.isConnected
+                          ? `${(Number(storageQuota.providers.mega.total) / 1073741824).toFixed(0)} GB`
+                          : '0 GB'}
                       </div>
-                      <span className="px-3 py-1 rounded-full text-xs font-semibold bg-secondary/10 text-secondary border border-secondary/20">
-                        System Scan
-                      </span>
                     </div>
-
-                    <div>
-                      <h4 className="font-bold text-lg text-[#e0e3e5]">Security Scan</h4>
-                      <p className="text-xs text-[#c1c6d7] mt-1 leading-relaxed">
-                        Last full integrity check: 2 hours ago. No threats detected.
-                      </p>
+                    <div className="bg-[#1d2022] p-2.5 rounded-2xl border border-white/5 text-center">
+                      <div className="text-[10px] text-[#8b90a0] font-medium truncate">Drive</div>
+                      <div className="text-xs font-extrabold text-emerald-400 mt-1">
+                        {storageQuota?.providers?.gdrive?.isConnected
+                          ? `${(Number(storageQuota.providers.gdrive.total) / 1073741824).toFixed(0)} GB`
+                          : '0 GB'}
+                      </div>
                     </div>
-
-                    <button
-                      onClick={() => setActiveNav('analytics')}
-                      className="w-full bg-[#1d2022] hover:bg-[#323537] border border-white/10 text-white font-semibold py-2.5 rounded-xl text-xs transition-colors"
-                    >
-                      View Report
-                    </button>
+                    <div className="bg-[#1d2022] p-2.5 rounded-2xl border border-white/5 text-center">
+                      <div className="text-[10px] text-[#8b90a0] font-medium truncate">OneDrive</div>
+                      <div className="text-xs font-extrabold text-cyan-400 mt-1">
+                        {storageQuota?.providers?.onedrive?.isConnected
+                          ? `${(Number(storageQuota.providers.onedrive.total) / 1073741824).toFixed(0)} GB`
+                          : '0 GB'}
+                      </div>
+                    </div>
+                    <div className="bg-[#1d2022] p-2.5 rounded-2xl border border-white/5 text-center">
+                      <div className="text-[10px] text-[#8b90a0] font-medium truncate">AWS S3</div>
+                      <div className="text-xs font-extrabold text-amber-400 mt-1">
+                        {storageQuota?.providers?.s3?.isConnected
+                          ? `${(Number(storageQuota.providers.s3.total) / 1073741824).toFixed(0)} GB`
+                          : '0 GB'}
+                      </div>
+                    </div>
+                    <div className="bg-[#1d2022] p-2.5 rounded-2xl border border-white/5 text-center">
+                      <div className="text-[10px] text-[#8b90a0] font-medium truncate">Dropbox</div>
+                      <div className="text-xs font-extrabold text-blue-400 mt-1">
+                        {storageQuota?.providers?.dropbox?.isConnected
+                          ? `${(Number(storageQuota.providers.dropbox.total) / 1073741824).toFixed(0)} GB`
+                          : '0 GB'}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
 
               <div className="glass-panel rounded-3xl p-8 border border-white/10 space-y-6">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-2xl text-[#e0e3e5]">Recent Activity</h3>
-                  <button onClick={() => setActiveNav('files')} className="text-xs font-semibold text-[#c1c6d7] hover:text-primary transition-colors">
-                    See All Activity
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <h3 className="font-bold text-2xl text-[#e0e3e5]">Recent Activity</h3>
+                    {activities.length > 0 && (
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-white/10 text-[#c1c6d7]">
+                        {showAllActivities
+                          ? `Showing all ${activities.length} ${activities.length === 1 ? 'file' : 'files'}`
+                          : `Showing latest ${Math.min(5, activities.length)} of ${activities.length}`}
+                      </span>
+                    )}
+                  </div>
+
+                  {activities.length > 5 ? (
+                    <button
+                      onClick={() => setShowAllActivities((prev) => !prev)}
+                      className="px-3.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-primary hover:text-white border border-white/10 transition-all flex items-center gap-1.5 shadow-sm"
+                    >
+                      <span>{showAllActivities ? 'Close & Show Less' : `See All Activity (${activities.length})`}</span>
+                      <span className="material-symbols-outlined text-sm">
+                        {showAllActivities ? 'expand_less' : 'expand_more'}
+                      </span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setActiveNav('files')}
+                      className="text-xs font-semibold text-[#c1c6d7] hover:text-primary transition-colors"
+                    >
+                      File Explorer
+                    </button>
+                  )}
                 </div>
 
                 <div className="overflow-x-auto">
@@ -2848,11 +3191,21 @@ export default function CloudFusionAppDashboard() {
                           </td>
                         </tr>
                       ) : (
-                        activities.map((act) => (
+                        (showAllActivities ? activities : activities.slice(0, 5)).map((act) => (
                           <tr key={act.id} className="hover:bg-white/5 transition-colors">
-                            <td className="py-4 font-semibold flex items-center space-x-3 text-white">
-                              <span className="material-symbols-outlined text-primary text-xl">{act.icon}</span>
-                              <span>{act.fileName}</span>
+                            <td className="py-4 font-semibold text-white">
+                              <div className="flex items-center space-x-3">
+                                <span className="material-symbols-outlined text-primary text-xl">{act.icon}</span>
+                                <div className="space-y-1">
+                                  <div className="font-semibold text-sm">{act.fileName}</div>
+                                  {act.isMirrored && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                                      <span className="material-symbols-outlined text-[11px]">shield</span>
+                                      <span>Dual Mirrored ({act.mirrorProvider || 'Replica'})</span>
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
                             </td>
                             <td className="py-4">
                               <span
@@ -2861,28 +3214,67 @@ export default function CloudFusionAppDashboard() {
                                     ? 'bg-primary/10 text-primary border border-primary/20'
                                     : act.cloudSource === 'Dropbox'
                                     ? 'bg-secondary/10 text-secondary border border-secondary/20'
-                                    : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                    : act.cloudSource === 'MEGA'
+                                    ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                    : act.cloudSource === 'AWS S3'
+                                    ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                    : 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'
                                 }`}
                               >
                                 {act.cloudSource}
                               </span>
                             </td>
-                            <td className="py-4 text-[#c1c6d7]">{act.size}</td>
+                            <td className="py-4 text-[#c1c6d7] text-xs">{act.size}</td>
                             <td className="py-4 text-xs text-[#8b90a0]">{act.timestamp}</td>
-                            <td className="py-4 text-right flex items-center justify-end gap-2">
-                              <button
-                                onClick={() => handleFileDownload(act.id, act.fileName)}
-                                title="Download & Decrypt File"
-                                className="px-3 py-1 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition-all flex items-center gap-1.5"
-                              >
-                                <span className="material-symbols-outlined text-sm">cloud_download</span>
-                                <span>Download</span>
-                              </button>
-                              {act.status === 'SYNCING' ? (
-                                <span className="material-symbols-outlined text-amber-400 text-xl animate-spin">sync</span>
-                              ) : (
-                                <span className="material-symbols-outlined text-emerald-400 text-xl">check_circle</span>
-                              )}
+                            <td className="py-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                <button
+                                  onClick={() => handlePreviewFile(act)}
+                                  title="Preview File"
+                                  className="px-2.5 py-1 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/40 text-xs font-bold transition-all flex items-center gap-1 shadow-sm"
+                                >
+                                  <span className="material-symbols-outlined text-sm">visibility</span>
+                                  <span className="hidden sm:inline">Preview</span>
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setShareModalFile(act);
+                                    setGeneratedShareUrl(null);
+                                    setShareCopied(false);
+                                  }}
+                                  title="Generate Secure Share Link"
+                                  className="px-2.5 py-1 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/40 text-xs font-bold transition-all flex items-center gap-1 shadow-sm"
+                                >
+                                  <span className="material-symbols-outlined text-sm">share</span>
+                                  <span className="hidden sm:inline">Share</span>
+                                </button>
+                                <button
+                                  onClick={() => setMigrateModalFile(act)}
+                                  title="Migrate / Move to Another Cloud"
+                                  className="px-2.5 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-bold transition-all flex items-center gap-1 shadow-sm"
+                                >
+                                  <span className="material-symbols-outlined text-sm">drive_file_move</span>
+                                  <span className="hidden sm:inline">Move</span>
+                                </button>
+                                <button
+                                  onClick={() => handleFileDownload(act.id, act.fileName)}
+                                  disabled={downloadingFileId === act.id}
+                                  title="Download & Decrypt File"
+                                  className="px-2.5 py-1 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition-all flex items-center gap-1 shadow-sm disabled:opacity-60"
+                                >
+                                  {downloadingFileId === act.id ? (
+                                    <>
+                                      <span className="material-symbols-outlined text-sm animate-spin text-cyan-300">sync</span>
+                                      <span className="hidden sm:inline">Decrypting...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span className="material-symbols-outlined text-sm">cloud_download</span>
+                                      <span className="hidden sm:inline">Download</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))
@@ -2890,6 +3282,18 @@ export default function CloudFusionAppDashboard() {
                     </tbody>
                   </table>
                 </div>
+
+                {activities.length > 5 && showAllActivities && (
+                  <div className="pt-4 flex justify-center border-t border-white/5">
+                    <button
+                      onClick={() => setShowAllActivities(false)}
+                      className="px-4 py-2 rounded-xl bg-[#1d2022] hover:bg-[#282b2e] text-xs font-semibold text-[#c1c6d7] hover:text-white border border-white/10 transition-all flex items-center gap-1.5 shadow-sm"
+                    >
+                      <span className="material-symbols-outlined text-sm">expand_less</span>
+                      <span>Close & Show Less</span>
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -2973,6 +3377,557 @@ export default function CloudFusionAppDashboard() {
                     <span>Authorize & Link 15GB Storage</span>
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MEGA CLOUD CONNECTION MODAL */}
+      {showMegaModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-[100] animate-fadeIn">
+          <div className="bg-[#161c1e] border border-white/20 rounded-3xl max-w-md w-full p-8 shadow-2xl space-y-6 relative overflow-hidden">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400">
+                  <span className="material-symbols-outlined text-3xl">lock</span>
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-lg text-white">MEGA E2EE Cloud</h3>
+                  <p className="text-xs text-[#8b90a0]">Zero-Knowledge Encrypted Mesh Node</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowMegaModal(false);
+                  setMegaError(null);
+                }}
+                className="text-[#8b90a0] hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors"
+              >
+                <span className="material-symbols-outlined text-xl">close</span>
+              </button>
+            </div>
+
+            <form onSubmit={handleConnectMega} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-[#c1c6d7] flex items-center justify-between">
+                  <span>Registered Account Email</span>
+                  <span className="text-[10px] text-rose-400 font-semibold uppercase tracking-wider">Locked to Account</span>
+                </label>
+                <div className="relative">
+                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">lock</span>
+                  <input
+                    type="email"
+                    value={user?.email || ''}
+                    readOnly
+                    className="w-full bg-[#101415] border border-white/10 rounded-xl pl-9 pr-3 py-2.5 text-xs text-white font-medium opacity-80 cursor-not-allowed focus:outline-none"
+                  />
+                </div>
+                <p className="text-[11px] text-[#8b90a0] leading-relaxed">
+                  For strict isolation, only cloud accounts matching your CloudFusion email (<strong className="text-white">{user?.email}</strong>) can be linked.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-[#c1c6d7]">MEGA Account Password</label>
+                <div className="relative">
+                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">key</span>
+                  <input
+                    type="password"
+                    placeholder="Enter password for this MEGA account"
+                    value={megaPassword}
+                    onChange={(e) => setMegaPassword(e.target.value)}
+                    required
+                    className="w-full bg-[#101415] border border-white/10 rounded-xl pl-9 pr-3 py-2.5 text-xs text-white focus:outline-none focus:border-rose-500 transition-colors"
+                  />
+                </div>
+              </div>
+
+              {megaError && (
+                <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
+                  <span className="material-symbols-outlined text-base shrink-0">error</span>
+                  <span>{megaError}</span>
+                </div>
+              )}
+
+              <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-[11px] text-rose-300 flex items-center gap-2 font-medium">
+                <span className="material-symbols-outlined text-base shrink-0">verified</span>
+                <span>Adds +20 GB zero-knowledge encrypted storage to your unified cloud mesh.</span>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMegaModal(false);
+                    setMegaError(null);
+                  }}
+                  className="px-5 py-2.5 rounded-xl text-xs font-bold text-[#8b90a0] hover:text-[#e0e3e5] hover:bg-white/5 transition-colors"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isSavingMega}
+                  className="px-6 py-2.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/20 transition-all flex items-center gap-2"
+                >
+                  {isSavingMega ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Authenticating MEGA...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-base">cloud_sync</span>
+                      <span>Link MEGA Node (+20 GB)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* AWS S3 CONNECTION MODAL */}
+      {showS3Modal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-[100] animate-fadeIn">
+          <div className="bg-[#161c1e] border border-white/20 rounded-3xl max-w-md w-full p-8 shadow-2xl space-y-6 relative overflow-hidden">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <span className="material-symbols-outlined text-3xl">database</span>
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-lg text-white">AWS S3 Object Bucket</h3>
+                  <p className="text-xs text-[#8b90a0]">Scalable Cloud Storage Integration</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowS3Modal(false);
+                  setS3Error(null);
+                }}
+                className="text-[#8b90a0] hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors"
+              >
+                <span className="material-symbols-outlined text-xl">close</span>
+              </button>
+            </div>
+
+            <form onSubmit={handleConnectS3} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-[#c1c6d7]">AWS Access Key ID</label>
+                <input
+                  type="text"
+                  placeholder="AKIA..."
+                  value={s3AccessKey}
+                  onChange={(e) => setS3AccessKey(e.target.value)}
+                  required
+                  className="w-full bg-[#101415] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 transition-colors"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-[#c1c6d7]">AWS Secret Access Key</label>
+                <input
+                  type="password"
+                  placeholder="Enter your AWS secret key"
+                  value={s3SecretKey}
+                  onChange={(e) => setS3SecretKey(e.target.value)}
+                  required
+                  className="w-full bg-[#101415] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 transition-colors"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-[#c1c6d7]">Region</label>
+                  <input
+                    type="text"
+                    placeholder="eu-north-1"
+                    value={s3Region}
+                    onChange={(e) => setS3Region(e.target.value)}
+                    required
+                    className="w-full bg-[#101415] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 transition-colors"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-[#c1c6d7]">Bucket Name</label>
+                  <input
+                    type="text"
+                    placeholder="my-storage-bucket"
+                    value={s3Bucket}
+                    onChange={(e) => setS3Bucket(e.target.value)}
+                    required
+                    className="w-full bg-[#101415] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 transition-colors"
+                  />
+                </div>
+              </div>
+
+              {s3Error && (
+                <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center gap-2">
+                  <span className="material-symbols-outlined text-base shrink-0">error</span>
+                  <span>{s3Error}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowS3Modal(false);
+                    setS3Error(null);
+                  }}
+                  className="px-5 py-2.5 rounded-xl text-xs font-bold text-[#8b90a0] hover:text-[#e0e3e5] hover:bg-white/5 transition-colors"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isSavingS3}
+                  className="px-6 py-2.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-black shadow-lg shadow-amber-500/20 transition-all flex items-center gap-2"
+                >
+                  {isSavingS3 ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                      <span>Validating S3...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-base">cloud_sync</span>
+                      <span>Link AWS S3 Bucket</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* IN-BROWSER FILE PREVIEW MODAL */}
+      {previewModalFile && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-[110] animate-fadeIn">
+          <div className="bg-[#161c1e] border border-white/20 rounded-3xl max-w-4xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col relative overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-white/10 pb-4 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400">
+                  <span className="material-symbols-outlined text-2xl">{previewModalFile.icon}</span>
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white truncate max-w-md" title={previewModalFile.fileName}>
+                    {previewModalFile.fileName}
+                  </h3>
+                  <div className="flex items-center gap-2 text-xs text-[#8b90a0] mt-0.5">
+                    <span>{previewModalFile.size}</span>
+                    <span>•</span>
+                    <span className="text-purple-300 font-semibold">{previewModalFile.cloudSource}</span>
+                    {previewModalFile.isMirrored && (
+                      <>
+                        <span>•</span>
+                        <span className="text-cyan-300 font-semibold">Mirrored on {previewModalFile.mirrorProvider || 'Secondary Cloud'}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleFileDownload(previewModalFile.id, previewModalFile.fileName)}
+                  className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-md"
+                >
+                  <span className="material-symbols-outlined text-base">cloud_download</span>
+                  <span>Save to Disk</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setPreviewModalFile(null);
+                    setPreviewBlobUrl(null);
+                    setPreviewTextContent(null);
+                  }}
+                  className="text-[#8b90a0] hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors"
+                >
+                  <span className="material-symbols-outlined text-xl">close</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body / Viewer */}
+            <div className="flex-1 overflow-auto bg-[#101415] rounded-2xl border border-white/10 p-4 min-h-[300px] flex items-center justify-center">
+              {previewLoading ? (
+                <div className="text-center space-y-3">
+                  <span className="material-symbols-outlined text-4xl text-purple-400 animate-spin">sync</span>
+                  <p className="text-xs font-semibold text-[#c1c6d7]">Streaming & Decrypting AES-256 Payload...</p>
+                </div>
+              ) : previewTextContent !== null ? (
+                <pre className="w-full text-xs text-[#e0e3e5] font-mono whitespace-pre-wrap break-all p-2 leading-relaxed select-text">
+                  {previewTextContent}
+                </pre>
+              ) : previewBlobUrl && (previewModalFile.mimeType?.includes('image') || /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(previewModalFile.fileName)) ? (
+                <img
+                  src={previewBlobUrl}
+                  alt={previewModalFile.fileName}
+                  className="max-h-[60vh] max-w-full rounded-lg object-contain shadow-xl"
+                />
+              ) : previewBlobUrl && (previewModalFile.mimeType?.includes('pdf') || /\.pdf$/i.test(previewModalFile.fileName)) ? (
+                <iframe
+                  src={previewBlobUrl}
+                  title={previewModalFile.fileName}
+                  className="w-full h-[65vh] rounded-xl border border-white/5"
+                />
+              ) : previewBlobUrl && (previewModalFile.mimeType?.includes('video') || /\.(mp4|webm)$/i.test(previewModalFile.fileName)) ? (
+                <video controls src={previewBlobUrl} className="max-h-[60vh] max-w-full rounded-xl shadow-xl" />
+              ) : previewBlobUrl && (previewModalFile.mimeType?.includes('audio') || /\.(mp3|wav|ogg)$/i.test(previewModalFile.fileName)) ? (
+                <audio controls src={previewBlobUrl} className="w-full max-w-md" />
+              ) : (
+                <div className="text-center space-y-3 p-6">
+                  <span className="material-symbols-outlined text-5xl text-purple-400 opacity-60">visibility_off</span>
+                  <h4 className="font-bold text-white text-sm">Binary Stream Decrypted Successfully</h4>
+                  <p className="text-xs text-[#8b90a0] max-w-md mx-auto">
+                    This file format does not support inline in-browser visual rendering, but its cryptographic payload has been verified and is ready for download.
+                  </p>
+                  <button
+                    onClick={() => handleFileDownload(previewModalFile.id, previewModalFile.fileName)}
+                    className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all inline-flex items-center gap-2 mt-2"
+                  >
+                    <span className="material-symbols-outlined text-base">download</span>
+                    <span>Download Decrypted Asset</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Cryptographic Verification Footer */}
+            <div className="shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 text-[11px] text-[#8b90a0]">
+              <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+                <span className="material-symbols-outlined text-sm">verified_user</span>
+                <span>Zero-Knowledge Decrypted: SHA-256 Verified</span>
+              </div>
+              {previewModalFile.checksumSHA256 && (
+                <div className="font-mono text-[10px] text-slate-400 truncate max-w-md" title={previewModalFile.checksumSHA256}>
+                  Hash: {previewModalFile.checksumSHA256}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CLOUD MIGRATION / REBALANCE MODAL */}
+      {migrateModalFile && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-[110] animate-fadeIn">
+          <div className="bg-[#161c1e] border border-white/20 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5 relative overflow-hidden">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <span className="material-symbols-outlined text-2xl">drive_file_move</span>
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white">Migrate File Node</h3>
+                  <p className="text-xs text-[#8b90a0]">Seamless Cloud-to-Cloud Transfer</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setMigrateModalFile(null)}
+                className="text-[#8b90a0] hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors"
+              >
+                <span className="material-symbols-outlined text-xl">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="bg-[#101415] p-3.5 rounded-2xl border border-white/10 space-y-1">
+                <div className="text-[11px] text-[#8b90a0]">Selected File:</div>
+                <div className="font-bold text-xs text-white truncate">{migrateModalFile.fileName}</div>
+                <div className="text-[11px] text-amber-400">Current Node: {migrateModalFile.cloudSource}</div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-[#c1c6d7]">Select Target Cloud Destination:</label>
+                <div className="grid grid-cols-1 gap-2">
+                  {[
+                    { id: 'MEGA', name: 'MEGA (+25 GB Free)', isLinked: !!storageQuota?.providers?.mega?.isConnected },
+                    { id: 'GOOGLE_DRIVE', name: 'Google Drive (+15 GB Free)', isLinked: !!storageQuota?.providers?.gdrive?.isConnected },
+                    { id: 'ONEDRIVE', name: 'Microsoft OneDrive (+5 GB Free)', isLinked: !!storageQuota?.providers?.onedrive?.isConnected },
+                    { id: 'AWS_S3', name: 'AWS S3 (Cloud Storage)', isLinked: !!storageQuota?.providers?.s3?.isConnected },
+                    { id: 'DROPBOX', name: 'Dropbox (+2 GB Free)', isLinked: !!storageQuota?.providers?.dropbox?.isConnected },
+                  ].map((prov) => {
+                    const isCurrent = migrateModalFile.rawCloudProvider === prov.id || migrateModalFile.cloudSource.toUpperCase().includes(prov.id);
+                    return (
+                      <button
+                        key={prov.id}
+                        disabled={isCurrent}
+                        onClick={() => setMigrateTargetProvider(prov.id)}
+                        className={`p-3 rounded-xl border text-left text-xs font-semibold transition-all flex items-center justify-between ${
+                          isCurrent
+                            ? 'opacity-40 border-white/5 bg-transparent cursor-not-allowed text-[#8b90a0]'
+                            : migrateTargetProvider === prov.id
+                            ? 'bg-amber-500/20 border-amber-400 text-amber-300 ring-1 ring-amber-400/40'
+                            : 'bg-[#101415] border-white/5 text-[#c1c6d7] hover:border-white/20'
+                        }`}
+                      >
+                        <span>{prov.name}</span>
+                        {isCurrent ? (
+                          <span className="text-[10px] font-bold text-[#8b90a0]">CURRENT</span>
+                        ) : prov.isLinked ? (
+                          <span className="text-[10px] font-bold text-emerald-400">CONNECTED</span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-[#8b90a0]">AVAILABLE</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[11px] text-amber-300 leading-relaxed">
+                CloudFusion streams the encrypted buffer directly to the target cloud and updates metadata records without exposing raw plaintext.
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setMigrateModalFile(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-[#8b90a0] hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={isMigrating}
+                onClick={() => handleMigrateFile(migrateModalFile.id, migrateTargetProvider)}
+                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-black shadow-lg shadow-amber-500/20 transition-all flex items-center gap-2"
+              >
+                {isMigrating ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                    <span>Migrating Asset...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-base">drive_file_move</span>
+                    <span>Start Migration</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TIME-LIMITED SECURE SHARE LINK MODAL */}
+      {shareModalFile && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-[110] animate-fadeIn">
+          <div className="bg-[#161c1e] border border-white/20 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5 relative overflow-hidden">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400">
+                  <span className="material-symbols-outlined text-2xl">share</span>
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white">Time-Limited Secure Share</h3>
+                  <p className="text-xs text-[#8b90a0]">Cryptographically Signed Download Link</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShareModalFile(null)}
+                className="text-[#8b90a0] hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors"
+              >
+                <span className="material-symbols-outlined text-xl">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="bg-[#101415] p-3.5 rounded-2xl border border-white/10 space-y-1">
+                <div className="text-[11px] text-[#8b90a0]">Asset to Share:</div>
+                <div className="font-bold text-xs text-white truncate">{shareModalFile.fileName}</div>
+              </div>
+
+              {!generatedShareUrl ? (
+                <div className="space-y-3">
+                  <label className="text-xs font-semibold text-[#c1c6d7]">Set Link Expiry Window:</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { hours: 1, label: '1 Hour' },
+                      { hours: 24, label: '24 Hours (1 Day)' },
+                      { hours: 72, label: '3 Days' },
+                      { hours: 168, label: '7 Days' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.hours}
+                        onClick={() => setShareExpiryHours(opt.hours)}
+                        className={`p-2.5 rounded-xl border text-center text-xs font-bold transition-all ${
+                          shareExpiryHours === opt.hours
+                            ? 'bg-blue-600 border-blue-400 text-white shadow-md shadow-blue-500/20'
+                            : 'bg-[#101415] border-white/5 text-[#8b90a0] hover:text-white'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    disabled={isGeneratingShare}
+                    onClick={() => handleGenerateShareLink(shareModalFile.id, shareExpiryHours)}
+                    className="w-full mt-2 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-lg shadow-blue-500/20 transition-all flex items-center justify-center gap-2"
+                  >
+                    {isGeneratingShare ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>Signing Security Token...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-base">vpn_key</span>
+                        <span>Generate Signed Share Link</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2 font-medium">
+                    <span className="material-symbols-outlined text-base">check_circle</span>
+                    <span>Secure Link generated! Valid for {shareExpiryHours} hours.</span>
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="text"
+                      readOnly
+                      value={generatedShareUrl}
+                      className="w-full bg-[#101415] border border-white/10 rounded-xl pl-3 pr-24 py-2.5 text-xs text-white font-mono select-all focus:outline-none"
+                    />
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(generatedShareUrl);
+                        setShareCopied(true);
+                        setTimeout(() => setShareCopied(false), 3000);
+                      }}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-bold transition-all flex items-center gap-1 shadow-md"
+                    >
+                      <span className="material-symbols-outlined text-sm">{shareCopied ? 'done' : 'content_copy'}</span>
+                      <span>{shareCopied ? 'Copied!' : 'Copy'}</span>
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-[#8b90a0] leading-relaxed">
+                    Recipients can open this link to decrypt and download the file directly in their browser without an account until it expires.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end pt-2">
+              <button
+                onClick={() => setShareModalFile(null)}
+                className="px-5 py-2 rounded-xl text-xs font-bold bg-[#1d2022] hover:bg-[#282b2e] text-white border border-white/10 transition-colors"
+              >
+                Close
               </button>
             </div>
           </div>
