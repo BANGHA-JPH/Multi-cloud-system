@@ -628,7 +628,8 @@ export async function generateShareLink(req: AuthRequest, res: Response): Promis
       { expiresIn: `${expiryHours}h` }
     );
 
-    const shareUrl = `http://localhost:5000/api/files/shared/${shareToken}`;
+    const serverUrl = (process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:5000').replace(/\/+$/, '');
+    const shareUrl = `${serverUrl}/api/files/shared/${shareToken}`;
 
     res.status(200).json({
       success: true,

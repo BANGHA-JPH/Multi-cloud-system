@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { API_BASE_URL } from '@/config/api';
 
 interface UploadProgressItem {
   id: string;
@@ -138,7 +139,7 @@ export default function CloudFusionAppDashboard() {
         bucketName: s3Bucket,
       };
 
-      const res = await fetch('http://localhost:5000/api/storage/connect', {
+      const res = await fetch(`${API_BASE_URL}/api/storage/connect`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -179,7 +180,7 @@ export default function CloudFusionAppDashboard() {
         password: megaPassword,
       };
 
-      const res = await fetch('http://localhost:5000/api/storage/connect', {
+      const res = await fetch(`${API_BASE_URL}/api/storage/connect`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -302,7 +303,7 @@ export default function CloudFusionAppDashboard() {
   const fetchStorageQuota = async (force: boolean = true) => {
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const res = await fetch(`http://localhost:5000/api/storage/quota${force ? '?refresh=true' : ''}`, {
+      const res = await fetch(`${API_BASE_URL}/api/storage/quota${force ? '?refresh=true' : ''}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
       });
@@ -323,7 +324,7 @@ export default function CloudFusionAppDashboard() {
   const fetchCloudAccounts = async () => {
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const res = await fetch('http://localhost:5000/api/storage/accounts', {
+      const res = await fetch(`${API_BASE_URL}/api/storage/accounts`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
       });
@@ -354,7 +355,7 @@ export default function CloudFusionAppDashboard() {
   const fetchUserFiles = async () => {
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const res = await fetch('http://localhost:5000/api/files/', {
+      const res = await fetch(`${API_BASE_URL}/api/files/`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
       });
@@ -448,7 +449,7 @@ export default function CloudFusionAppDashboard() {
 
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const res = await fetch(`http://localhost:5000/api/files/download/${fileId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/files/download/${fileId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
       });
@@ -505,7 +506,7 @@ export default function CloudFusionAppDashboard() {
 
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const res = await fetch(`http://localhost:5000/api/files/preview/${file.id}`, {
+      const res = await fetch(`${API_BASE_URL}/api/files/preview/${file.id}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
       });
@@ -535,7 +536,7 @@ export default function CloudFusionAppDashboard() {
     setIsMigrating(true);
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const res = await fetch(`http://localhost:5000/api/files/migrate/${fileId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/files/migrate/${fileId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -567,7 +568,7 @@ export default function CloudFusionAppDashboard() {
     setShareCopied(false);
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const res = await fetch(`http://localhost:5000/api/files/share/${fileId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/files/share/${fileId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -594,7 +595,7 @@ export default function CloudFusionAppDashboard() {
     if (!confirm(`Are you sure you want to delete "${fileName}" from your cloud mesh?`)) return;
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') : null;
-      const res = await fetch(`http://localhost:5000/api/files/${fileId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/files/${fileId}`, {
         method: 'DELETE',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: 'include',
@@ -710,7 +711,7 @@ export default function CloudFusionAppDashboard() {
 
   const handleLogout = async () => {
     try {
-      await fetch('http://localhost:5000/api/auth/logout', {
+      await fetch(`${API_BASE_URL}/api/auth/logout`, {
         method: 'POST',
         credentials: 'include',
       });
@@ -743,13 +744,13 @@ export default function CloudFusionAppDashboard() {
     if (!isCurrentlyLinked) {
       const token = typeof window !== 'undefined' ? localStorage.getItem('cloudfusion_token') || '' : '';
       if (id === 'onedrive') {
-        window.location.href = `http://localhost:5000/api/storage/onedrive/login?token=${encodeURIComponent(token)}`;
+        window.location.href = `${API_BASE_URL}/api/storage/onedrive/login?token=${encodeURIComponent(token)}`;
         return;
       } else if (id === 'gdrive') {
-        window.location.href = `http://localhost:5000/api/storage/gdrive/login?token=${encodeURIComponent(token)}`;
+        window.location.href = `${API_BASE_URL}/api/storage/gdrive/login?token=${encodeURIComponent(token)}`;
         return;
       } else if (id === 'dropbox') {
-        window.location.href = `http://localhost:5000/api/storage/dropbox/login?token=${encodeURIComponent(token)}`;
+        window.location.href = `${API_BASE_URL}/api/storage/dropbox/login?token=${encodeURIComponent(token)}`;
         return;
       } else if (id === 's3') {
         setShowS3Modal(true);
@@ -763,7 +764,7 @@ export default function CloudFusionAppDashboard() {
     // If currently linked, disconnecting safely removes the account
     try {
       const token = localStorage.getItem('cloudfusion_token');
-      const res = await fetch('http://localhost:5000/api/storage/disconnect', {
+      const res = await fetch(`${API_BASE_URL}/api/storage/disconnect`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -913,7 +914,7 @@ export default function CloudFusionAppDashboard() {
           formData.append('strategy', balanceStrategy);
         }
 
-        const res = await fetch('http://localhost:5000/api/files/upload', {
+        const res = await fetch(`${API_BASE_URL}/api/files/upload`, {
           method: 'POST',
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           credentials: 'include',
@@ -2147,11 +2148,11 @@ export default function CloudFusionAppDashboard() {
                           onClick={() => {
                             const token = localStorage.getItem('cloudfusion_token') || '';
                             if (conn.id === 'onedrive') {
-                              window.location.href = `http://localhost:5000/api/storage/onedrive/login?token=${encodeURIComponent(token)}`;
+                              window.location.href = `${API_BASE_URL}/api/storage/onedrive/login?token=${encodeURIComponent(token)}`;
                             } else if (conn.id === 'gdrive') {
-                              window.location.href = `http://localhost:5000/api/storage/gdrive/login?token=${encodeURIComponent(token)}`;
+                              window.location.href = `${API_BASE_URL}/api/storage/gdrive/login?token=${encodeURIComponent(token)}`;
                             } else if (conn.id === 'dropbox') {
-                              window.location.href = `http://localhost:5000/api/storage/dropbox/login?token=${encodeURIComponent(token)}`;
+                              window.location.href = `${API_BASE_URL}/api/storage/dropbox/login?token=${encodeURIComponent(token)}`;
                             } else if (conn.id === 's3') {
                               setShowS3Modal(true);
                             } else if (conn.id === 'mega') {
@@ -2595,7 +2596,7 @@ export default function CloudFusionAppDashboard() {
                       if (storageQuota?.providers?.gdrive?.isConnected) {
                         setSelectedDestination('GDRIVE');
                       } else {
-                        window.location.href = 'http://localhost:5000/api/storage/gdrive/login';
+                        window.location.href = `${API_BASE_URL}/api/storage/gdrive/login`;
                       }
                     }}
                     className={`glass-panel p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden ${
@@ -2632,7 +2633,7 @@ export default function CloudFusionAppDashboard() {
                       if (storageQuota?.providers?.dropbox?.isConnected) {
                         setSelectedDestination('DROPBOX');
                       } else {
-                        window.location.href = 'http://localhost:5000/api/storage/dropbox/login';
+                        window.location.href = `${API_BASE_URL}/api/storage/dropbox/login`;
                       }
                     }}
                     className={`glass-panel p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden ${

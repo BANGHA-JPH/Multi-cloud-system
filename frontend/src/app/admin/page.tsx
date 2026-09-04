@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { API_BASE_URL } from '@/config/api';
 
 interface TelemetryData {
   totalUsers: number;
@@ -78,9 +79,9 @@ export default function CloudFusionAdminConsole() {
       const headers = { Authorization: `Bearer ${token}` };
 
       const [telemetryRes, usersRes, logsRes] = await Promise.all([
-        fetch('http://localhost:5000/api/admin/telemetry', { headers, credentials: 'include' }),
-        fetch('http://localhost:5000/api/admin/users', { headers, credentials: 'include' }),
-        fetch('http://localhost:5000/api/admin/audit-logs', { headers, credentials: 'include' }),
+        fetch(`${API_BASE_URL}/api/admin/telemetry`, { headers, credentials: 'include' }),
+        fetch(`${API_BASE_URL}/api/admin/users`, { headers, credentials: 'include' }),
+        fetch(`${API_BASE_URL}/api/admin/audit-logs`, { headers, credentials: 'include' }),
       ]);
 
       if (telemetryRes.status === 403 || usersRes.status === 403) {

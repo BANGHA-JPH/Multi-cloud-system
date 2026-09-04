@@ -30,10 +30,11 @@ const googleAuthSchema = z.object({
 
 // Helper function to set authentication httpOnly cookies
 function setAuthCookie(res: Response, token: string) {
+  const isProd = process.env.NODE_ENV === 'production';
   res.cookie('token', token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   });
 }
@@ -212,10 +213,11 @@ export async function loginUser(req: Request, res: Response): Promise<void> {
 
 // 3. User Logout
 export async function logoutUser(_req: Request, res: Response): Promise<void> {
+  const isProd = process.env.NODE_ENV === 'production';
   res.clearCookie('token', {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
   });
   res.status(200).json({ message: 'Logged out successfully.' });
 }
@@ -315,8 +317,9 @@ export async function googleOAuth(req: Request, res: Response): Promise<void> {
 // 6. Redirect to Google OAuth Sign-in URL
 export async function redirectToGoogleAuth(req: Request, res: Response): Promise<void> {
   try {
+    const serverUrl = (process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:5000').replace(/\/+$/, '');
     const clientId = process.env.GOOGLE_CLIENT_ID || '';
-    const redirectUri = 'http://localhost:5000/api/auth/google/callback';
+    const redirectUri = `${serverUrl}/api/auth/google/callback`;
     const scopes = [
       'openid',
       'https://www.googleapis.com/auth/userinfo.email',
@@ -365,9 +368,10 @@ export async function handleGoogleAuthCallback(req: Request, res: Response): Pro
       return;
     }
 
+    const serverUrl = (process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:5000').replace(/\/+$/, '');
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const redirectUri = 'http://localhost:5000/api/auth/google/callback';
+    const redirectUri = `${serverUrl}/api/auth/google/callback`;
 
     const postData = querystring.stringify({
       code,

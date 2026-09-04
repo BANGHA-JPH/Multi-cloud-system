@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: cloudfusion-backend
+    env: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ENCRYPTION_MASTER_KEY
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: SERVER_URL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: ONEDRIVE_CLIENT_ID
+        sync: false
+      - key: ONEDRIVE_CLIENT_SECRET
+        sync: false
+      - key: DROPBOX_APP_KEY
+        sync: false
+      - key: DROPBOX_APP_SECRET
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_S3_BUCKET_NAME
+        sync: false

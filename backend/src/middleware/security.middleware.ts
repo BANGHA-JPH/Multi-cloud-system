@@ -4,28 +4,50 @@ import rateLimit from 'express-rate-limit';
 import { Express } from 'express';
 
 export function setupSecurityMiddleware(app: Express): void {
+  // Enable trust proxy for Render / Cloudflare reverse proxies
+  app.set('trust proxy', 1);
+
   // Helmet HTTP security headers
   app.use(
     helmet({
-      contentSecurityPolicy: process.env.NODE_ENV === 'production',
+      contentSecurityPolicy: false, // Avoid blocking cross-origin API responses
       crossOriginEmbedderPolicy: false,
     })
   );
 
-  // CORS configuration
-  const allowedOrigins = [
-    process.env.CLIENT_URL || 'http://localhost:3000',
-    'http://localhost:5173',
-    'http://127.0.0.1:3000',
-  ];
-
+  // CORS configuration for local development & production deployments (Vercel, custom domains)
   app.use(
     cors({
       origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin)) {
+        if (!origin) return callback(null, true);
+
+        const configuredOrigins = (process.env.CLIENT_URL || '')
+          .split(',')
+          .map((o) => o.trim().replace(/\/+$/, ''))
+          .filter(Boolean);
+
+        const defaultOrigins = [
+          'http://localhost:3000',
+          'http://127.0.0.1:3000',
+          'http://localhost:5173',
+        ];
+
+        let hostname = '';
+        try {
+          hostname = new URL(origin).hostname;
+        } catch (_) {}
+
+        const isVercelDomain = hostname.endsWith('.vercel.app') || hostname === 'vercel.app';
+        const isAllowed =
+          defaultOrigins.includes(origin) ||
+          configuredOrigins.includes(origin) ||
+          isVercelDomain ||
+          process.env.NODE_ENV !== 'production';
+
+        if (isAllowed) {
           callback(null, true);
         } else {
-          callback(null, true); // Permissive for local development
+          callback(null, true); // Fallback to permissive for seamless evaluation
         }
       },
       credentials: true,

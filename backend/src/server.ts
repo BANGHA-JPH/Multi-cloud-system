@@ -17,10 +17,11 @@ async function bootstrap() {
   // Connect to Database
   await connectDB();
 
-  app.listen(PORT, () => {
-    console.log(`⚡ CloudFusion Server is running on port ${PORT}`);
+  const portNumber = Number(PORT) || 5000;
+  app.listen(portNumber, '0.0.0.0', () => {
+    console.log(`⚡ CloudFusion Server is running on port ${portNumber} (0.0.0.0)`);
     console.log(`🔒 AES-256 E2E Encryption Engine: ACTIVE`);
-    console.log(`🌐 Health check available at: http://localhost:${PORT}/api/health`);
+    console.log(`🌐 Health check available at: /api/health`);
   });
 }
 

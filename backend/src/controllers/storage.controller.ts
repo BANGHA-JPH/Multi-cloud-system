@@ -24,6 +24,10 @@ import {
 } from '../services/storage/gdrive.service';
 import { prisma } from '../config/db';
 
+function getServerUrl(): string {
+  return (process.env.SERVER_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:5000').replace(/\/+$/, '');
+}
+
 function saveEnvVariable(key: string, value: string) {
   try {
     const envPath = path.resolve(process.cwd(), '.env');
@@ -329,7 +333,7 @@ export async function getOneDriveAuthUrlHandler(req: Request, res: Response): Pr
   try {
     const rawUserId = extractUserIdFromReq(req) || '';
     const userId = await resolveValidUserId(rawUserId);
-    const redirectUri = (req.query.redirectUri as string) || `http://localhost:5000/api/storage/onedrive/callback`;
+    const redirectUri = (req.query.redirectUri as string) || `${getServerUrl()}/api/storage/onedrive/callback`;
     const authUrl = getOneDriveAuthUrl(redirectUri, userId);
     res.status(200).json({ authUrl });
   } catch (error: any) {
@@ -407,7 +411,7 @@ export async function redirectToOneDriveLogin(req: Request, res: Response): Prom
     const userId = await resolveValidUserId(rawUserId);
     const isMobile = req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent']));
     const state = isMobile ? `${userId}___mobile` : userId;
-    const redirectUri = 'http://localhost:5000/api/storage/onedrive/callback';
+    const redirectUri = `${getServerUrl()}/api/storage/onedrive/callback`;
     const authUrl = getOneDriveAuthUrl(redirectUri, state);
     res.redirect(authUrl);
   } catch (error: any) {
@@ -432,7 +436,7 @@ export async function handleOneDriveGetCallback(req: Request, res: Response): Pr
       return;
     }
 
-    const redirectUri = 'http://localhost:5000/api/storage/onedrive/callback';
+    const redirectUri = `${getServerUrl()}/api/storage/onedrive/callback`;
     const tokenResult = await exchangeOneDriveCode(code, redirectUri);
 
     if (tokenResult?.refreshToken) {
@@ -523,7 +527,7 @@ export async function handleOneDriveCallback(req: AuthenticatedRequest, res: Res
     }
 
     const { exchangeOneDriveCode, getOneDriveStorageUsage } = await import('../services/storage/onedrive.service');
-    const targetRedirectUri = redirectUri || 'http://localhost:5000/api/storage/onedrive/callback';
+    const targetRedirectUri = redirectUri || `${getServerUrl()}/api/storage/onedrive/callback`;
     const tokenResult = await exchangeOneDriveCode(code, targetRedirectUri);
 
     if (!tokenResult?.refreshToken) {
@@ -598,7 +602,7 @@ export async function redirectToGDriveLogin(req: Request, res: Response): Promis
     const userId = await resolveValidUserId(rawUserId);
     const isMobile = req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent']));
     const state = isMobile ? `${userId}___mobile` : userId;
-    const redirectUri = 'http://localhost:5000/api/storage/gdrive/callback';
+    const redirectUri = `${getServerUrl()}/api/storage/gdrive/callback`;
     const authUrl = getGDriveAuthUrl(redirectUri, state);
     res.redirect(authUrl);
   } catch (e) {
@@ -625,7 +629,7 @@ export async function handleGDriveGetCallback(req: Request, res: Response): Prom
 
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const redirectUri = 'http://localhost:5000/api/storage/gdrive/callback';
+    const redirectUri = `${getServerUrl()}/api/storage/gdrive/callback`;
 
     const postData = querystring.stringify({
       code,
@@ -837,7 +841,7 @@ export async function getDropboxAuthUrlHandler(req: Request, res: Response): Pro
   try {
     const rawUserId = extractUserIdFromReq(req) || '';
     const userId = await resolveValidUserId(rawUserId);
-    const redirectUri = (req.query.redirectUri as string) || 'http://localhost:5000/api/storage/dropbox/callback';
+    const redirectUri = (req.query.redirectUri as string) || `${getServerUrl()}/api/storage/dropbox/callback`;
     const authUrl = getDropboxAuthUrl(redirectUri, userId);
     res.status(200).json({ authUrl });
   } catch (error) {
@@ -851,7 +855,7 @@ export async function redirectToDropboxLogin(req: Request, res: Response): Promi
     const userId = await resolveValidUserId(rawUserId);
     const isMobile = req.query.source === 'mobile' || (req.headers['user-agent'] && /mobile|android|iphone|ipad/i.test(req.headers['user-agent']));
     const state = isMobile ? `${userId}___mobile` : userId;
-    const redirectUri = 'http://localhost:5000/api/storage/dropbox/callback';
+    const redirectUri = `${getServerUrl()}/api/storage/dropbox/callback`;
     const authUrl = getDropboxAuthUrl(redirectUri, state);
     res.redirect(authUrl);
   } catch (e) {
@@ -876,7 +880,7 @@ export async function handleDropboxGetCallback(req: Request, res: Response): Pro
       return;
     }
 
-    const redirectUri = 'http://localhost:5000/api/storage/dropbox/callback';
+    const redirectUri = `${getServerUrl()}/api/storage/dropbox/callback`;
     const tokenResult = await exchangeDropboxCode(code, redirectUri);
 
     if (tokenResult && tokenResult.accessToken) {

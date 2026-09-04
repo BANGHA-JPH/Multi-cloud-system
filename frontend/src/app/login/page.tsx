@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { API_BASE_URL } from '@/config/api';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -47,7 +48,7 @@ export default function LoginPage() {
     setErrorMsg('');
 
     try {
-      const res = await fetch('http://localhost:5000/api/auth/login', {
+      const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -80,7 +81,7 @@ export default function LoginPage() {
 
   const handleGoogleSignIn = () => {
     setIsLoading(true);
-    window.location.href = 'http://localhost:5000/api/auth/google/login';
+    window.location.href = `${API_BASE_URL}/api/auth/google/login`;
   };
 
   return (

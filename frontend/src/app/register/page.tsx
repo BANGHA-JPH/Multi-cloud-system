@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { API_BASE_URL } from '@/config/api';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -62,7 +63,7 @@ export default function RegisterPage() {
     }
 
     try {
-      const res = await fetch('http://localhost:5000/api/auth/register', {
+      const res = await fetch(`${API_BASE_URL}/api/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -286,7 +287,7 @@ export default function RegisterPage() {
           type="button"
           onClick={() => {
             setIsLoading(true);
-            window.location.href = 'http://localhost:5000/api/auth/google/login';
+            window.location.href = `${API_BASE_URL}/api/auth/google/login`;
           }}
           className="w-full py-3 px-4 bg-slate-950/60 hover:bg-slate-800/60 border border-slate-800 rounded-xl text-xs font-semibold text-slate-200 flex items-center justify-center gap-3 transition-all duration-200 group"
         >
