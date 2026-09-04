@@ -143,27 +143,20 @@ export default function CloudFusionAdminConsole() {
   const getActionBadgeClass = (action: string) => {
     switch (action) {
       case 'USER_REGISTER':
-        return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
       case 'USER_LOGIN':
-        return 'bg-blue-500/20 text-blue-300 border-blue-500/30';
       case 'FILE_UPLOAD':
-        return 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30';
-      case 'FILE_DOWNLOAD':
-        return 'bg-purple-500/20 text-purple-300 border-purple-500/30';
       case 'CLOUD_REBALANCE':
-        return 'bg-amber-500/20 text-amber-300 border-amber-500/30';
-      case 'FILE_DELETE':
-        return 'bg-rose-500/20 text-rose-300 border-rose-500/30';
+        return 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30';
       default:
-        return 'bg-white/10 text-[#c1c6d7] border-white/20';
+        return 'bg-slate-800/80 text-slate-300 border-white/10';
     }
   };
 
   if (authError) {
     return (
-      <div className="min-h-screen bg-[#060913] text-white flex items-center justify-center p-6 font-sans">
-        <div className="max-w-md w-full glass-panel bg-slate-900/80 border border-red-500/30 p-8 rounded-3xl text-center space-y-5 shadow-2xl backdrop-blur-xl">
-          <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center mx-auto text-red-400">
+      <div className="min-h-screen bg-[#070b14] text-slate-100 flex items-center justify-center p-6 font-sans">
+        <div className="max-w-md w-full bg-[#0b101d] border border-cyan-500/30 p-8 rounded-3xl text-center space-y-5 shadow-2xl backdrop-blur-xl">
+          <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center mx-auto text-cyan-400">
             <span className="material-symbols-outlined text-4xl">admin_panel_settings</span>
           </div>
           <h2 className="font-extrabold text-2xl tracking-tight text-white">Administrator Access Required</h2>
@@ -171,13 +164,13 @@ export default function CloudFusionAdminConsole() {
           <div className="pt-2 flex flex-col gap-3">
             <Link
               href="/login"
-              className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-lg transition-all"
+              className="w-full py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold text-xs shadow-lg shadow-cyan-500/20 transition-all"
             >
               Sign In with Admin Account
             </Link>
             <Link
               href="/dashboard"
-              className="w-full py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all"
+              className="w-full py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-bold text-xs border border-white/10 transition-all"
             >
               Return to User Dashboard
             </Link>
@@ -199,10 +192,10 @@ export default function CloudFusionAdminConsole() {
   });
 
   return (
-    <div className="min-h-screen bg-[#070b14] text-slate-100 font-sans selection:bg-blue-500 selection:text-white pb-16">
+    <div className="min-h-screen bg-[#070b14] text-slate-100 font-sans selection:bg-cyan-500 selection:text-slate-950 pb-16">
       {/* Toast Banner */}
       {toastMessage && (
-        <div className="fixed top-5 right-5 z-[200] bg-slate-900/95 border border-cyan-500/40 text-cyan-300 px-5 py-3 rounded-2xl shadow-2xl text-xs font-bold flex items-center gap-2 animate-fadeIn backdrop-blur-md">
+        <div className="fixed top-5 right-5 z-[200] bg-[#0b101d]/95 border border-cyan-500/40 text-cyan-300 px-5 py-3 rounded-2xl shadow-2xl text-xs font-bold flex items-center gap-2 animate-fadeIn backdrop-blur-md">
           <span className="material-symbols-outlined text-base">info</span>
           <span>{toastMessage}</span>
         </div>
@@ -213,8 +206,8 @@ export default function CloudFusionAdminConsole() {
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <Link href="/" className="flex items-center gap-2.5 group">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-indigo-600 p-[1px] shadow-lg shadow-cyan-500/20">
-                <div className="w-full h-full bg-[#0B0F19] rounded-[11px] flex items-center justify-center">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-cyan-700 p-[1px] shadow-lg shadow-cyan-500/20">
+                <div className="w-full h-full bg-[#070b14] rounded-[11px] flex items-center justify-center">
                   <span className="material-symbols-outlined text-cyan-400 text-2xl">admin_panel_settings</span>
                 </div>
               </div>
@@ -222,22 +215,22 @@ export default function CloudFusionAdminConsole() {
                 <span className="font-extrabold text-xl tracking-tight text-white">
                   Cloud<span className="text-cyan-400">Fusion</span>
                 </span>
-                <span className="ml-2 text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                <span className="ml-2 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
                   ADMIN CONSOLE
                 </span>
               </div>
             </Link>
 
-            <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Multi-Cloud Security Perimeter Active</span>
+            <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-semibold">
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+              <span>Security Perimeter Active</span>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
             <Link
               href="/dashboard"
-              className="px-4 py-2 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
+              className="px-4 py-2 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
             >
               <span className="material-symbols-outlined text-base">dashboard</span>
               <span>Switch to User Dashboard</span>
@@ -250,14 +243,14 @@ export default function CloudFusionAdminConsole() {
                 setTimeout(() => setToastMessage(null), 3000);
               }}
               title="Refresh Telemetry"
-              className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-750 text-slate-300 hover:text-white border border-white/10 transition-colors"
+              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-white/10 transition-colors"
             >
               <span className="material-symbols-outlined text-base">refresh</span>
             </button>
 
             <button
               onClick={handleLogout}
-              className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 hover:text-white border border-white/10 transition-colors flex items-center gap-1.5"
+              className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-xs font-bold text-slate-300 hover:text-white border border-white/10 transition-colors flex items-center gap-1.5"
             >
               <span className="material-symbols-outlined text-base">logout</span>
               <span className="hidden sm:inline">Logout</span>
@@ -273,7 +266,7 @@ export default function CloudFusionAdminConsole() {
           <div>
             <h1 className="font-extrabold text-3xl text-white tracking-tight">System Administration & Telemetry</h1>
             <p className="text-xs text-slate-400 mt-1">
-              Live monitoring of registered accounts, system-wide storage mesh consumption, and cryptographic audit records.
+              Live monitoring of registered accounts, multi-cloud storage distribution, and cryptographic audit records.
             </p>
           </div>
 
@@ -283,63 +276,63 @@ export default function CloudFusionAdminConsole() {
           </div>
         </div>
 
-        {/* 4 TELEMETRY HERO CARDS */}
+        {/* 4 TELEMETRY HERO CARDS - TWO-COLOR UNIFIED CYAN/SLATE DESIGN */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* CARD 1: Total Registered Users */}
-          <div className="bg-slate-900/60 border border-white/10 p-6 rounded-3xl shadow-xl backdrop-blur-xl space-y-2 relative overflow-hidden group hover:border-cyan-500/40 transition-all">
+          <div className="bg-[#0b101d] border border-white/10 hover:border-cyan-500/40 p-6 rounded-3xl shadow-xl space-y-2 relative overflow-hidden transition-all group">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Total Users</span>
-              <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+              <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
                 <span className="material-symbols-outlined text-xl">group</span>
               </div>
             </div>
             <div className="text-3xl font-extrabold text-white tracking-tight">
               {isLoading ? '...' : telemetry?.totalUsers ?? 0}
             </div>
-            <p className="text-[11px] text-emerald-400 flex items-center gap-1 font-semibold">
+            <p className="text-[11px] text-cyan-400 flex items-center gap-1 font-semibold">
               <span className="material-symbols-outlined text-xs">check_circle</span>
-              <span>100% Active Accounts</span>
+              <span>Active Accounts Provisioned</span>
             </p>
           </div>
 
           {/* CARD 2: System-wide Storage Stored */}
-          <div className="bg-slate-900/60 border border-white/10 p-6 rounded-3xl shadow-xl backdrop-blur-xl space-y-2 relative overflow-hidden group hover:border-indigo-500/40 transition-all">
+          <div className="bg-[#0b101d] border border-white/10 hover:border-cyan-500/40 p-6 rounded-3xl shadow-xl space-y-2 relative overflow-hidden transition-all group">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Mesh Storage</span>
-              <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+              <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
                 <span className="material-symbols-outlined text-xl">database</span>
               </div>
             </div>
             <div className="text-3xl font-extrabold text-white tracking-tight">
               {isLoading ? '...' : telemetry?.totalStoredGB ?? '0.00'} <span className="text-base text-slate-400 font-semibold">GB</span>
             </div>
-            <p className="text-[11px] text-indigo-300 font-semibold truncate">
-              {formatBytes(telemetry?.totalStoredBytes || 0)} Encrypted
+            <p className="text-[11px] text-slate-400 font-semibold truncate">
+              {formatBytes(telemetry?.totalStoredBytes || 0)} Under AES-256 Mesh
             </p>
           </div>
 
           {/* CARD 3: Active Files & Replicas */}
-          <div className="bg-slate-900/60 border border-white/10 p-6 rounded-3xl shadow-xl backdrop-blur-xl space-y-2 relative overflow-hidden group hover:border-purple-500/40 transition-all">
+          <div className="bg-[#0b101d] border border-white/10 hover:border-cyan-500/40 p-6 rounded-3xl shadow-xl space-y-2 relative overflow-hidden transition-all group">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Encrypted Assets</span>
-              <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400">
+              <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
                 <span className="material-symbols-outlined text-xl">lock</span>
               </div>
             </div>
             <div className="text-3xl font-extrabold text-white tracking-tight">
               {isLoading ? '...' : telemetry?.totalFiles ?? 0}
             </div>
-            <p className="text-[11px] text-cyan-300 font-semibold flex items-center gap-1">
+            <p className="text-[11px] text-cyan-400 font-semibold flex items-center gap-1">
               <span className="material-symbols-outlined text-xs">shield</span>
               <span>{telemetry?.totalMirroredFiles ?? 0} Dual-Mirrored Replicas</span>
             </p>
           </div>
 
           {/* CARD 4: Security Audit Events */}
-          <div className="bg-slate-900/60 border border-white/10 p-6 rounded-3xl shadow-xl backdrop-blur-xl space-y-2 relative overflow-hidden group hover:border-emerald-500/40 transition-all">
+          <div className="bg-[#0b101d] border border-white/10 hover:border-cyan-500/40 p-6 rounded-3xl shadow-xl space-y-2 relative overflow-hidden transition-all group">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Audit Ledger</span>
-              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+              <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
                 <span className="material-symbols-outlined text-xl">history_edu</span>
               </div>
             </div>
@@ -347,17 +340,17 @@ export default function CloudFusionAdminConsole() {
               {isLoading ? '...' : telemetry?.totalAuditEvents ?? 0}
             </div>
             <p className="text-[11px] text-slate-400 font-semibold">
-              Immutable Cryptographic Log
+              Immutable Cryptographic Ledger
             </p>
           </div>
         </div>
 
-        {/* CLOUD MESH DISTRIBUTION METER */}
-        <div className="bg-slate-900/60 border border-white/10 rounded-3xl p-6 sm:p-8 space-y-4 backdrop-blur-xl shadow-xl">
+        {/* CLOUD MESH DISTRIBUTION - UNIFIED TWO-COLOR DESIGN */}
+        <div className="bg-[#0b101d] border border-white/10 rounded-3xl p-6 sm:p-8 space-y-4 shadow-xl">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
               <h3 className="font-extrabold text-lg text-white">System-Wide Storage Mesh Distribution</h3>
-              <p className="text-xs text-slate-400 mt-0.5">Real-time asset dispersion across all 5 connected cloud storage providers.</p>
+              <p className="text-xs text-slate-400 mt-0.5">Asset dispersion across connected cloud storage providers.</p>
             </div>
             <span className="text-xs font-mono text-cyan-400 font-bold px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 w-fit">
               AES-256-GCM Encrypted
@@ -366,20 +359,25 @@ export default function CloudFusionAdminConsole() {
 
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 pt-2">
             {[
-              { id: 'MEGA', name: 'MEGA', color: 'text-rose-400', border: 'border-rose-500/30', bg: 'bg-rose-500/10' },
-              { id: 'GOOGLE_DRIVE', name: 'Google Drive', color: 'text-emerald-400', border: 'border-emerald-500/30', bg: 'bg-emerald-500/10' },
-              { id: 'ONEDRIVE', name: 'OneDrive', color: 'text-cyan-400', border: 'border-cyan-500/30', bg: 'bg-cyan-500/10' },
-              { id: 'AWS_S3', name: 'AWS S3', color: 'text-amber-400', border: 'border-amber-500/30', bg: 'bg-amber-500/10' },
-              { id: 'DROPBOX', name: 'Dropbox', color: 'text-blue-400', border: 'border-blue-500/30', bg: 'bg-blue-500/10' },
+              { id: 'MEGA', name: 'MEGA' },
+              { id: 'GOOGLE_DRIVE', name: 'Google Drive' },
+              { id: 'ONEDRIVE', name: 'OneDrive' },
+              { id: 'AWS_S3', name: 'AWS S3' },
+              { id: 'DROPBOX', name: 'Dropbox' },
             ].map((node) => {
               const nodeData = telemetry?.providerDistribution?.[node.id] || { count: 0, bytes: 0 };
               return (
-                <div key={node.id} className={`p-4 rounded-2xl border ${node.border} ${node.bg} space-y-1 text-center`}>
-                  <div className="text-xs font-bold text-slate-400 uppercase">{node.name}</div>
-                  <div className={`text-lg font-extrabold ${node.color}`}>
+                <div
+                  key={node.id}
+                  className="p-4 rounded-2xl border border-white/10 bg-slate-900/60 hover:border-cyan-500/40 space-y-1 text-center transition-colors"
+                >
+                  <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">{node.name}</div>
+                  <div className="text-lg font-extrabold text-cyan-400">
                     {formatBytes(nodeData.bytes)}
                   </div>
-                  <div className="text-[10px] text-slate-400">{nodeData.count} {nodeData.count === 1 ? 'file' : 'files'}</div>
+                  <div className="text-[10px] text-slate-400 font-mono">
+                    {nodeData.count} {nodeData.count === 1 ? 'file' : 'files'}
+                  </div>
                 </div>
               );
             })}
@@ -387,11 +385,11 @@ export default function CloudFusionAdminConsole() {
         </div>
 
         {/* SECTION: REGISTERED USERS & ACCOUNT STATUS */}
-        <div className="bg-slate-900/60 border border-white/10 rounded-3xl p-6 sm:p-8 space-y-6 backdrop-blur-xl shadow-xl">
+        <div className="bg-[#0b101d] border border-white/10 rounded-3xl p-6 sm:p-8 space-y-6 shadow-xl">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h2 className="font-extrabold text-xl text-white">Registered Users & Account Status</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Manage user authorization privileges and observe individual storage footprints.</p>
+              <p className="text-xs text-slate-400 mt-0.5">Observe individual storage footprints and user account statuses.</p>
             </div>
 
             {/* Search Input */}
@@ -402,7 +400,7 @@ export default function CloudFusionAdminConsole() {
                 placeholder="Search users by name or email..."
                 value={userSearch}
                 onChange={(e) => setUserSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 bg-slate-950 border border-white/10 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
+                className="w-full pl-10 pr-4 py-2 bg-slate-900 border border-white/10 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
               />
             </div>
           </div>
@@ -431,7 +429,7 @@ export default function CloudFusionAdminConsole() {
                     <tr key={u.id} className="hover:bg-white/5 transition-colors">
                       <td className="py-4">
                         <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-xl bg-slate-800 border border-white/10 flex items-center justify-center font-bold text-cyan-400 text-xs">
+                          <div className="w-8 h-8 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center font-bold text-cyan-400 text-xs">
                             {u.name.charAt(0).toUpperCase()}
                           </div>
                           <div>
@@ -444,8 +442,8 @@ export default function CloudFusionAdminConsole() {
                         <span
                           className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold border ${
                             u.role === 'ADMIN'
-                              ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
-                              : 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                              ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                              : 'bg-slate-900 text-slate-300 border-white/10'
                           }`}
                         >
                           {u.role}
@@ -461,8 +459,8 @@ export default function CloudFusionAdminConsole() {
                         {formatBytes(u.usedStorageBytes)}
                       </td>
                       <td className="py-4 text-right">
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-extrabold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
+                          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
                           <span>ACTIVE</span>
                         </span>
                       </td>
@@ -475,7 +473,7 @@ export default function CloudFusionAdminConsole() {
         </div>
 
         {/* SECTION: SECURITY AUDIT LOG */}
-        <div className="bg-slate-900/60 border border-white/10 rounded-3xl p-6 sm:p-8 space-y-6 backdrop-blur-xl shadow-xl">
+        <div className="bg-[#0b101d] border border-white/10 rounded-3xl p-6 sm:p-8 space-y-6 shadow-xl">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h2 className="font-extrabold text-xl text-white">Security Audit Log (Cryptographic Ledger)</h2>
@@ -494,10 +492,10 @@ export default function CloudFusionAdminConsole() {
                 <button
                   key={opt.id}
                   onClick={() => setAuditActionFilter(opt.id)}
-                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all shrink-0 ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 ${
                     auditActionFilter === opt.id
-                      ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
-                      : 'bg-slate-950 text-slate-400 hover:text-white border border-white/5'
+                      ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20 font-extrabold'
+                      : 'bg-slate-900 text-slate-400 hover:text-white border border-white/10'
                   }`}
                 >
                   {opt.label}
